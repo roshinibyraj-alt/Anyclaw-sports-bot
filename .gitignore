@@ -1,0 +1,7 @@
+node_modules/
+sim_state_*.json
+state_*.json
+*.log
+sports_bot_*.json
+state_fifa_*.json
+restart.sh

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Polymarket Sports Bot</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#06060a;--bg2:#0d0d14;--bg3:#13131e;--border:#1e1e2e;--border2:#2a2a3e;--green:#00e676;--red:#ff3d57;--yellow:#ffd740;--white:#eeeef8;--muted:#55556a;--dim:#2a2a40;--fb:#4a9eff;--tn:#e91e8c;--cr:#ff9800;--ff:#8bc34a}
+body{background:var(--bg);color:var(--white);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;overflow-x:hidden}
+header{background:var(--bg2);border-bottom:1px solid var(--border);padding:8px 12px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:100;flex-wrap:wrap}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--green);flex-shrink:0}
+.dot.off{background:var(--red)}
+.btitle{font-size:15px;font-weight:700}
+.bsub{font-size:9px;color:var(--muted)}
+.hright{display:flex;gap:12px;align-items:center;margin-left:auto;flex-wrap:wrap}
+.hitem{text-align:right}
+.hitem label{font-size:8px;color:var(--muted);display:block;letter-spacing:1px}
+.hitem .val{font-size:14px;font-weight:700}
+.hitem .val.pos{color:var(--green)}
+.hitem .val.neg{color:var(--red)}
+main{padding:8px;max-width:700px;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+.section{margin-bottom:4px}
+.section-title{font-size:10px;font-weight:700;letter-spacing:2px;color:var(--muted);border-bottom:1px solid var(--border);padding:4px 0;margin-bottom:6px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center}
+.sport-grid{display:grid;grid-template-columns:1fr;gap:8px}
+@media(min-width:600px){.sport-grid{grid-template-columns:1fr 1fr}}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:10px;overflow:hidden}
+.card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.card-name{font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px}
+.card-name .badge{font-size:8px;padding:2px 6px;border-radius:8px;background:var(--dim);color:var(--muted)}
+.card-bal{font-size:14px;font-weight:700}
+.card-pnl{font-size:10px;margin-top:1px}
+.card-pnl.pos{color:var(--green)}
+.card-pnl.neg{color:var(--red)}
+.match{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:6px 8px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+.m-title{font-size:11px;font-weight:600;flex:1;min-width:120px}
+.m-title .live{font-size:8px;color:var(--red);margin-left:4px}
+.m-prices{display:flex;gap:6px;font-size:11px}
+.m-price{background:var(--bg4);padding:2px 6px;border-radius:4px}
+.pos-box{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:6px 8px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px}
+.pos-side{font-weight:700;font-size:11px}
+.pos-pnl{font-weight:700;font-size:12px}
+.pos-pnl.pos{color:var(--green)}
+.pos-pnl.neg{color:var(--red)}
+.trade-feed{max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.trade{font-size:10px;display:flex;align-items:center;gap:4px;padding:2px 4px;border-radius:3px;background:var(--bg3)}
+.trade.w{background:#00e67608}
+.trade.l{background:#ff3d5708}
+.t-type{font-size:7px;padding:1px 3px;border-radius:2px;background:var(--dim);flex-shrink:0}
+.t-side{font-weight:600;font-size:9px}
+.t-pnl{font-weight:700;font-size:10px;margin-left:auto}
+.t-pnl.g{color:var(--green)}
+.t-pnl.r{color:var(--red)}
+.t-time{font-size:8px;color:var(--muted);flex-shrink:0}
+.t-empty{font-size:10px;color:var(--muted);text-align:center;padding:8px}
+.empty-state{padding:16px;text-align:center;color:var(--muted);font-size:12px}
+footer{text-align:center;padding:12px;font-size:9px;color:var(--muted)}
+::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--dim);border-radius:3px}
+</style>
+</head>
+<body>
+<header>
+  <div class="dot" id="dot"></div>
+  <div><div class="btitle">Polymarket Sports</div><div class="bsup" id="status">Connecting...</div></div>
+  <div class="hright" id="hdr-bals"></div>
+</header>
+<main>
+  <div class="section"><div class="section-title">Sports <span id="sports-summary" style="font-size:9px;letter-spacing:0;color:var(--muted)"></span></div></div>
+  <div class="sport-grid" id="sports-grid"></div>
+  <div class="section" id="fifa-section"><div class="section-title">FIFA World Cup <span id="fifa-count" style="font-size:9px;color:var(--muted)"></span></div><div id="fifa-content"><div class="empty-state">Waiting...</div></div></div>
+</main>
+<footer>Polymarket Bot v1.0</footer>
+<script>
+(function(){
+'use strict';
+var socket = io({transports:['websocket','polling']});
+var dot=document.getElementById('dot'), status=document.getElementById('status');
+socket.on('connect',function(){dot.className='dot';status.textContent='Live'});
+socket.on('disconnect',function(){dot.className='dot off';status.textContent='Offline'});
+socket.on('snapshot',function(d){if(!d)return;render(d)});
+
+function render(d){
+  // Header balances
+  var hdr='', sports=d.sports||{}, totalTrades=0;
+  ['tennis','cricket','football'].forEach(function(sk){
+    var sc=sports[sk];
+    if(!sc)return;
+    var pnl=sc.totalPnl||0;
+    hdr+='<div class="hitem"><label>'+sc.label+'</label><div class="val '+(pnl>=0?'pos':'neg')+'">$'+(sc.balance||0).toFixed(0)+'</div></div>';
+    totalTrades+=(sc.wins||0)+(sc.losses||0);
+  });
+  document.getElementById('hdr-bals').innerHTML=hdr;
+  document.getElementById('sports-summary').textContent=totalTrades+' trades';
+
+  // Sports panels
+  var grid=document.getElementById('sports-grid');
+  grid.innerHTML=['tennis','cricket','football'].map(function(sk){
+    var sc=sports[sk]; if(!sc)return '';
+    var pnl=sc.totalPnl||0, tt=(sc.wins||0)+(sc.losses||0);
+    var wr=tt>0?(sc.wins/tt*100).toFixed(0)+'%':'-';
+    var matchHtml='';
+    if(sc.matches)sc.matches.forEach(function(m){
+      matchHtml+='<div class="match"><div class="m-title">'+(m.title||'?')+(m.isLive?'<span class="live">🔴</span>':'')+'</div>'+
+        '<div class="m-prices">'+(m.prices?m.prices.map(function(p){return '<span class="m-price">'+p.toFixed(3)+'</span>'}).join(''):'')+'</div></div>';
+      if(m.openPosition){
+        var pnlCls=(m.livePnl||0)>=0?'pos':'neg';
+        matchHtml+='<div class="pos-box"><span class="pos-side">'+m.openPosition.side+'</span><span class="pos-pnl '+pnlCls+'">'+((m.livePnl||0)>=0?'+':'')+(m.livePnl||0).toFixed(2)+'</span></div>';
+      }
+    });
+    var tradesHtml='';
+    if(sc.recentTrades&&sc.recentTrades.length){
+      tradesHtml=sc.recentTrades.slice().reverse().slice(0,12).map(function(t){
+        var cls=t.type==='ENTRY'?'':(t.won?'w':'l');
+        var pnlStr='';
+        if(t.type!=='ENTRY')pnlStr=' <span class="t-pnl '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
+        return '<div class="trade '+cls+'"><span class="t-type">'+(t.type||'')+'</span><span class="t-side">'+(t.side||'')+'</span>'+pnlStr+'<span class="t-time">'+(t.at?t.at.slice(11,19):'')+'</span></div>';
+      }).join('');
+    } else { tradesHtml='<div class="t-empty">No trades</div>'; }
+    return '<div class="card"><div class="card-head"><div class="card-name">'+(sc.label||sk)+' <span class="badge">W'+sc.wins+'/L'+sc.losses+' ('+wr+')</span></div>'+
+      '<div class="card-bal '+(pnl>=0?'pos':'neg')+'">$'+(sc.balance||0).toFixed(2)+'</div></div>'+
+      '<div class="card-pnl '+(pnl>=0?'pos':'neg')+'">P&L: '+(pnl>=0?'+':'')+'$'+pnl.toFixed(2)+'</div>'+
+      matchHtml+'<div class="section-title" style="font-size:9px;margin:6px 0 4px">Trades</div><div class="trade-feed">'+tradesHtml+'</div></div>';
+  }).join('');
+
+  // FIFA
+  var fifa=(d.fifaMatches||[]), fc=document.getElementById('fifa-content'), fcnt=document.getElementById('fifa-count');
+  if(!fifa.length){fc.innerHTML='<div class="empty-state">Waiting for matches...</div>';fcnt.textContent='';return;}
+  fcnt.textContent='('+fifa.length+')';
+  fc.innerHTML=fifa.map(function(m){
+    var posHtml='', tradesHtml='';
+    if(m.openPosition){
+      var cls=(m.livePnl||0)>=0?'pos':'neg';
+      posHtml='<div class="pos-box"><span class="pos-side">'+(m.openPosition.side||'')+'</span><span class="pos-pnl '+cls+'">'+((m.livePnl||0)>=0?'+':'')+(m.livePnl||0).toFixed(2)+'</span></div>';
+    }
+    if(m.recentTrades&&m.recentTrades.length){
+      tradesHtml=m.recentTrades.slice(-3).reverse().map(function(t){
+        var cls=t.type==='ENTRY'?'':(t.won?'w':'l');
+        var pnlStr='';
+        if(t.type!=='ENTRY')pnlStr=' <span class="t-pnl '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
+        return '<div class="trade '+cls+'"><span class="t-type">'+(t.type||'')+'</span><span class="t-side">'+(t.side||'')+'</span>'+pnlStr+'</div>';
+      }).join('');
+    }
+    var wr=m.totalTrades>0?(m.wins/m.totalTrades*100).toFixed(0)+'%':'-';
+    return '<div class="match"><div class="m-title">'+(m.label||'')+'</div><div style="font-size:10px;color:var(--muted)">$'+(m.balance||0).toFixed(0)+' W'+(m.wins||0)+'/L'+(m.losses||0)+' ('+wr+')</div></div>'+posHtml+tradesHtml;
+  }).join('');
+}
+})();
+</script>
+</body>
+</html>

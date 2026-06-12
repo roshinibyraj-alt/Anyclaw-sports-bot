@@ -394,6 +394,11 @@ async function refreshFifa() {
         const ask = parseFloat((await ar.json()).price||0)||0;
         const bid = parseFloat((await br.json()).price||0)||0;
         if (ask>0||bid>0) priceBook[tid] = {bid,ask};
+    // Log when match goes live (first non-zero prices)
+    if (!match._loggedLive) {
+      const livePrices = tokens.filter(t => getPrice(t) > 0.01).length;
+      if (livePrices >= 3) { match._loggedLive = true; logFn(`🔴 ${cfg.label} GONE LIVE — prices detected`); }
+    }
       } catch(_) {}
     }));
     s.fifaMarkets = cfg.subMarkets.map(sub => ({

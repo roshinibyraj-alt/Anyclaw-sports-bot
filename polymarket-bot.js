@@ -128,6 +128,9 @@ async function discoverSports() {
         if (!e || e.closed || seen.has(e.id)) continue;
         const tags = (e.tags || []).map(t => (t.label || '').toLowerCase());
         if (tags.some(t => t.includes('esports') || t.includes('league of legends') || t.includes('dota'))) continue;
+        // Must match this sport's tags — prevents cross-sport pollution
+        const matchesSport = cfg.matchTags.some(mt => tags.some(t => t.includes(mt)));
+        if (!matchesSport) continue;
         const ml = findMoneylineMarket(e);
         if (!ml) continue;
         const liq = ml.liquidityNum || 0;
@@ -135,11 +138,9 @@ async function discoverSports() {
         let tokens = []; try { tokens = JSON.parse(ml.clobTokenIds || '[]'); } catch (_) {}
         if (tokens.length < 2) continue;
         seen.add(e.id);
-        found.push({ matchId: String(e.id), sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
+        found.push({ matchId: String(e.id), sport: sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
         if (found.length >= 10) break;
-      }
       if (found.length === 0) {
-        // Fallback — broad scan
         const all = await getJsonArray(GAMMA + '/events?closed=false&live=true&limit=50');
         for (const e of all) {
           if (!e || seen.has(e.id)) continue;
@@ -156,6 +157,7 @@ async function discoverSports() {
           found.push({ matchId: String(e.id), sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
           if (found.length >= 10) break;
         }
+      }
       }
       for (const m of found) {
         if (!sportsDiscovery[sport]) sportsDiscovery[sport] = [];

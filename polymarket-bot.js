@@ -66,6 +66,7 @@ const SPORTS_CFG = {
   tennis:   { label: 'Tennis',   capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Tennis',   matchTags: ['tennis','atp','wta','challenger','libema','slam','open'],                  seedPatterns: ['tennis','atp','wta','slam','open','challenger'] },
   cricket:  { label: 'Cricket',  capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Cricket',  matchTags: ['cricket','t20','odi','bbl','ipl','test','icc','women','world cup','crint'], seedPatterns: ['icc','t20','world cup','crint','cricket'] },
   football: { label: 'Football', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Soccer',   matchTags: ['soccer','football','world cup','fifa','uefa','premier','champions'],         seedPatterns: ['soccer','football','fifa','uefa','champions','world cup'] },
+  mlb: { label: 'MLB', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'MLB', matchTags: ['mlb','baseball'], seedPatterns: ['mlb','baseball'] }
 };
 
 const sportsState = {};

@@ -85,7 +85,7 @@ socket.on('snapshot',function(d){if(!d)return;render(d)});
 function render(d){
   // Header balances
   var hdr='', sports=d.sports||{}, totalTrades=0;
-  ['tennis','cricket','football'].forEach(function(sk){
+  Object.keys(d.sports||{}).forEach(function(sk){
     var sc=sports[sk];
     if(!sc)return;
     var pnl=sc.totalPnl||0;
@@ -97,7 +97,7 @@ function render(d){
 
   // Sports panels
   var grid=document.getElementById('sports-grid');
-  grid.innerHTML=['tennis','cricket','football'].map(function(sk){
+  grid.innerHTML=Object.keys(d.sports||{}).map(function(sk){
     var sc=sports[sk]; if(!sc)return '';
     var pnl=sc.totalPnl||0, tt=(sc.wins||0)+(sc.losses||0);
     var wr=tt>0?(sc.wins/tt*100).toFixed(0)+'%':'-';

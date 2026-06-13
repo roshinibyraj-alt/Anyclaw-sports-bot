@@ -524,6 +524,387 @@ function fifaManage() {
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// BTC BOT — 5m & 15m Up/Down Windows — "Trend Exhaustion Martingale"
+// ═══════════════════════════════════════════════════════════════════════
+//
+// STRATEGY:
+//   BTC short-term windows show low autocorrelation (streaks rarely extend
+//   beyond 3). Polymarket traders OVER-extrapolate recent streaks, creating
+//   a fade edge. TWO signal types:
+//
+//   1. STREAK FADE (primary): After 3+ same-direction window closes,
+//      fade the next window. Enter within first 90s (5m) / 4min (15m).
+//
+//   2. INTRA-WINDOW OVEREXTEND (secondary): If any side reaches ≥0.72
+//      within the first 60% of the window, fade it (buy the cheap side).
+//
+//   EXIT: TP=0.85, SL=0.10, Time exit at 80% of window
+//   Trailing stop to breakeven if price crosses 0.50
+//
+//   MARTINGALE: Base=2%, double on loss, max 4 doubles (32% cap),
+//   reset on win. Separate trackers for 5m and 15m.
+
+const BTC_CONFIGS = {
+  btc_5m: {
+    key: 'btc_5m', label: 'BTC 5M', windowSize: 300,
+    marketSlug: 'btc-updown-5m',
+    entryWindowStart: 15, entryWindowEnd: 90,
+    baseBetPct: 0.02, maxDoubles: 4,
+    tpPrice: 0.85, stopPrice: 0.10,
+    timeExitBeforeEnd: 30,
+    streakFadeCount: 3,
+    overextendThreshold: 0.72, overextendMaxPct: 0.60,
+    capital: 2000,
+  },
+  btc_15m: {
+    key: 'btc_15m', label: 'BTC 15M', windowSize: 900,
+    marketSlug: 'btc-updown-15m',
+    entryWindowStart: 30, entryWindowEnd: 240,
+    baseBetPct: 0.02, maxDoubles: 4,
+    tpPrice: 0.85, stopPrice: 0.10,
+    timeExitBeforeEnd: 60,
+    streakFadeCount: 3,
+    overextendThreshold: 0.72, overextendMaxPct: 0.60,
+    capital: 2000,
+  },
+};
+
+let btcStates = {};
+let btcMarketCache = {};
+let btcBtcPrice = 0;
+let btcWs = null;
+
+function btcWindowStart(ws) {
+  return Math.floor(Math.floor(Date.now() / 1000) / ws) * ws;
+}
+function btcElapsed(ws) { return Math.floor(Date.now() / 1000) - btcWindowStart(ws); }
+function btcRemaining(ws) { return ws - btcElapsed(ws); }
+
+function freshBtcState(cfg) {
+  return {
+    balance: cfg.capital,
+    totalPnl: 0, totalFees: 0, wins: 0, losses: 0,
+    betAmount: fl2(cfg.capital * cfg.baseBetPct),
+    betLevel: 0, maxBetReached: 0,
+    streak: [], // ['up','down',...] of completed windows
+    currentWindowStart: null,
+    upToken: null, dnToken: null,
+    openPosition: null, trades: [],
+  };
+}
+
+function loadBtcState(cfg) {
+  const f = path.join(__dirname, 'btc_state_'+cfg.key+'.json');
+  try {
+    if (fs.existsSync(f)) {
+      const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+      const def = freshBtcState(cfg);
+      for (const k of Object.keys(def)) { if (raw[k] == null) raw[k] = def[k]; }
+      btcStates[cfg.key] = raw;
+    } else { btcStates[cfg.key] = freshBtcState(cfg); }
+  } catch (_) { btcStates[cfg.key] = freshBtcState(cfg); }
+}
+function saveBtcState(cfg) {
+  try { fs.writeFileSync(path.join(__dirname, 'btc_state_'+cfg.key+'.json'), JSON.stringify(btcStates[cfg.key], null, 2)); } catch (_) {}
+}
+
+function onBtcWin(s) { s.betAmount = fl2(Math.max(5, s.balance * 0.02)); s.betLevel = 0; }
+function onBtcLoss(s) {
+  if (s.betLevel >= 4) { s.betAmount = fl2(Math.max(5, s.balance * 0.02)); s.betLevel = 0; return; }
+  s.betLevel++; s.betAmount = fl2(s.betAmount * 2);
+  if (s.betAmount > s.maxBetReached) s.maxBetReached = s.betAmount;
+}
+
+// Binance BTC price stream
+function connectBtcPrice() {
+  if (btcWs) { try { btcWs.close(); } catch(_) {} }
+  const connect = () => {
+    btcWs = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@aggTrade');
+    btcWs.on('open', () => logFn('✅ Binance BTC connected'));
+    btcWs.on('message', raw => { try { const p = parseFloat(JSON.parse(raw).p); if (p > 0) btcBtcPrice = p; } catch(_) {} });
+    btcWs.on('close', () => { btcWs = null; setTimeout(connect, 3000); });
+    btcWs.on('error', () => {});
+  };
+  connect();
+}
+
+// Fetch market for a specific window timestamp
+async function fetchBtcMarket(cfg, windowStart) {
+  const cacheKey = cfg.key+':'+windowStart;
+  if (btcMarketCache[cacheKey]) return btcMarketCache[cacheKey];
+  const slug = cfg.marketSlug+'-'+windowStart;
+  try {
+    const data = await getJson(GAMMA + '/markets/slug/' + slug);
+    const mkt = data?.markets?.length ? (data.markets.find(m => m.acceptingOrders !== false) ?? data.markets[0]) : data;
+    if (!mkt) return null;
+    let ids = mkt.clobTokenIds || mkt.clob_token_ids;
+    if (typeof ids === 'string') { try { ids = JSON.parse(ids); } catch(_) { ids = null; } }
+    if (!Array.isArray(ids) || ids.length < 2) return null;
+    let outcomes = mkt.outcomes;
+    if (typeof outcomes === 'string') { try { outcomes = JSON.parse(outcomes); } catch(_) { outcomes = null; } }
+    let upI = 0, dnI = 1;
+    if (Array.isArray(outcomes)) {
+      const ui = outcomes.findIndex(o => /up/i.test(String(o)));
+      const di = outcomes.findIndex(o => /down/i.test(String(o)));
+      if (ui >= 0) upI = ui; if (di >= 0) dnI = di;
+    }
+    const result = { windowStart, upToken: String(ids[upI]), dnToken: String(ids[dnI]), slug };
+    // Seed prices from API
+    let prices = mkt.outcomePrices;
+    if (typeof prices === 'string') { try { prices = JSON.parse(prices); } catch(_) { prices = null; } }
+    if (Array.isArray(prices) && prices.length >= 2) {
+      const upP = parseFloat(prices[upI]) || 0;
+      const dnP = parseFloat(prices[dnI]) || 0;
+      if (upP > 0) priceBook[result.upToken] = { bid: Math.max(0.001, upP-0.01), ask: Math.min(0.999, upP+0.01) };
+      if (dnP > 0) priceBook[result.dnToken] = { bid: Math.max(0.001, dnP-0.01), ask: Math.min(0.999, dnP+0.01) };
+    }
+    btcMarketCache[cacheKey] = result;
+    return result;
+  } catch (_) { return null; }
+}
+
+// Ensure current window is cached
+async function refreshBtcMarkets(cfg) {
+  const ws = btcWindowStart(cfg.windowSize);
+  if (!btcMarketCache[cfg.key+':'+ws]) {
+    for (const offset of [0, 1, -1, 2]) {
+      const w = await fetchBtcMarket(cfg, ws + offset * cfg.windowSize);
+      if (w && btcMarketCache[cfg.key+':'+ws]) break;
+    }
+  }
+}
+
+// Poll CLOB for live prices
+async function pollBtcPrices(cfg) {
+  const ws = btcWindowStart(cfg.windowSize);
+  const s = btcStates[cfg.key];
+  const tokens = new Set();
+  const w = btcMarketCache[cfg.key+':'+ws];
+  if (w) { tokens.add(w.upToken); tokens.add(w.dnToken); }
+  if (s.openPosition && s.openPosition.token) tokens.add(s.openPosition.token);
+  await Promise.all([...tokens].map(async tid => {
+    try {
+      const [ar, br] = await Promise.all([
+        fetch(CLOB_REST+'/price?token_id='+tid+'&side=BUY', {timeout:3000}),
+        fetch(CLOB_REST+'/price?token_id='+tid+'&side=SELL', {timeout:3000}),
+      ]);
+      const ask = parseFloat((await ar.json()).price||0)||0;
+      const bid = parseFloat((await br.json()).price||0)||0;
+      if (ask>0||bid>0) priceBook[tid] = {bid,ask};
+    } catch(_) {}
+  }));
+}
+
+// Check if a side is overextended within the window
+function btcOverextendSignal(cfg, elapsed, upPrice, dnPrice) {
+  const pct = elapsed / cfg.windowSize;
+  if (pct > cfg.overextendMaxPct || pct < 0.05) return null;
+  if (upPrice >= cfg.overextendThreshold && upPrice > dnPrice && dnPrice > 0.02 && dnPrice < 0.50) {
+    return { side:'dn', entryPrice: dnPrice, leadPrice: upPrice, reason: 'fade UP='+fl4(upPrice)+' DN='+fl4(dnPrice)+' @'+elapsed+'s' };
+  }
+  if (dnPrice >= cfg.overextendThreshold && dnPrice > upPrice && upPrice > 0.02 && upPrice < 0.50) {
+    return { side:'up', entryPrice: upPrice, leadPrice: dnPrice, reason: 'fade DN='+fl4(dnPrice)+' UP='+fl4(upPrice)+' @'+elapsed+'s' };
+  }
+  return null;
+}
+
+// Check streak fade signal
+function btcStreakSignal(cfg, s, elapsed, upPrice, dnPrice) {
+  const streak = s.streak || [];
+  if (streak.length < cfg.streakFadeCount) return null;
+  const last3 = streak.slice(-cfg.streakFadeCount);
+  if (!last3.every(r => r === last3[0])) return null;
+  if (elapsed < cfg.entryWindowStart || elapsed > cfg.entryWindowEnd) return null;
+  const fadeDir = last3[0] === 'up' ? 'dn' : 'up';
+  const fadePrice = fadeDir === 'up' ? upPrice : dnPrice;
+  if (fadePrice <= 0 || fadePrice > 0.45) return null;
+  return { side: fadeDir, entryPrice: fadePrice, leadPrice: fadeDir === 'up' ? dnPrice : upPrice,
+    reason: 'streak '+last3.join(',')+' fade '+fadeDir+' @'+fl4(fadePrice) };
+}
+
+// Combined BTC signal
+function btcSignal(cfg) {
+  const s = btcStates[cfg.key];
+  if (!s || s.openPosition) return null;
+  const ws = btcWindowStart(cfg.windowSize);
+  const elapsed = btcElapsed(cfg.windowSize);
+  const w = btcMarketCache[cfg.key+':'+ws];
+  if (!w) return null;
+  const upPrice = getPrice(w.upToken);
+  const dnPrice = getPrice(w.dnToken);
+  if (!upPrice || !dnPrice || upPrice <= 0 || dnPrice <= 0) return null;
+  // 1. Streak fade
+  const ss = btcStreakSignal(cfg, s, elapsed, upPrice, dnPrice);
+  if (ss) return ss;
+  // 2. Intra-window overextend
+  const oe = btcOverextendSignal(cfg, elapsed, upPrice, dnPrice);
+  if (oe) return oe;
+  return null;
+}
+
+// Entry
+async function btcEntry(cfg) {
+  const s = btcStates[cfg.key];
+  if (!s || s.openPosition) return;
+  const signal = btcSignal(cfg);
+  if (!signal) return;
+  const betAmount = fl2(Math.max(5, s.betAmount));
+  if (s.balance < betAmount) return;
+  const w = btcMarketCache[cfg.key+':'+btcWindowStart(cfg.windowSize)];
+  if (!w) return;
+  const entryPrice = signal.entryPrice;
+  const shares = fl4(betAmount / Math.max(entryPrice, 0.01));
+  const tokenId = signal.side === 'up' ? w.upToken : w.dnToken;
+  const fRate = await getFeeRate(tokenId);
+  const entryFee = fl2(betAmount * fRate * (1 - entryPrice));
+  const totalCost = fl2(betAmount + entryFee);
+  s.balance = subF(s.balance, totalCost);
+  s.totalFees = addF(s.totalFees, entryFee);
+  s.openPosition = {
+    side: signal.side, token: tokenId, entryPrice: fl4(entryPrice),
+    amount: betAmount, shares, netOut: totalCost, feeRate: fRate,
+    tpPrice: cfg.tpPrice, stopPrice: cfg.stopPrice,
+    entryTime: Date.now(), entryElapsed: btcElapsed(cfg.windowSize),
+    windowStart: btcWindowStart(cfg.windowSize),
+    betLevel: s.betLevel, reason: signal.reason,
+  };
+  logFn('📈 ['+cfg.label+'] ENTRY '+signal.side.toUpperCase()+' @ '+fl4(entryPrice)+' | $'+betAmount+' L'+s.betLevel+' | '+signal.reason);
+  s.trades.push({ type:'ENTRY', side:signal.side.toUpperCase(), entryPrice:fl4(entryPrice), amount:betAmount, betLevel:s.betLevel, reason:signal.reason, at:new Date().toISOString() });
+  if (s.trades.length > 100) s.trades = s.trades.slice(-100);
+  saveBtcState(cfg);
+}
+
+// Manage positions: TP/SL/Time exit + trail
+function btcManage(cfg) {
+  const s = btcStates[cfg.key];
+  if (!s || !s.openPosition) return;
+  const pos = s.openPosition;
+  const cp = getPrice(pos.token);
+  if (!cp || cp <= 0) return;
+  const ws = btcWindowStart(cfg.windowSize);
+  if (pos.windowStart < ws) return; // handle via resolution
+  const remaining = btcRemaining(cfg.windowSize);
+  let exitType = null;
+  if (cp >= pos.tpPrice) exitType = 'TP';
+  else if (cp <= pos.stopPrice) exitType = 'STOP';
+  else if (remaining <= cfg.timeExitBeforeEnd) exitType = 'TIME';
+  // Trailing stop to breakeven when price crosses 0.50
+  if (!exitType && cp >= 0.50 && pos.entryPrice < 0.50 && !pos._trailSet) {
+    pos._trailSet = true;
+    pos.stopPrice = Math.min(pos.entryPrice, 0.48); // breakeven or better
+    logFn('🔒 ['+cfg.label+'] Trail @ '+fl4(cp)+' — stop to '+fl4(pos.stopPrice));
+    s.openPosition = pos;
+    saveBtcState(cfg);
+    return;
+  }
+  if (!exitType) return;
+  const gross = fl4(pos.shares * cp);
+  const rawPnl = fl4(gross - pos.netOut);
+  const xFee = exitType === 'TP' ? 0 : (pos.feeRate || 0.03);
+  const exitFee = exitType === 'TP' ? 0 : fl4(pos.shares * xFee * cp * (1 - cp));
+  const netProceeds = fl4(gross - exitFee);
+  const actualPnl = fl4(rawPnl - exitFee);
+  const won = actualPnl >= 0;
+  s.balance = addF(s.balance, netProceeds);
+  s.totalPnl = fl4(s.totalPnl + actualPnl);
+  s.totalFees = addF(s.totalFees, exitFee);
+  if (won) { s.wins++; onBtcWin(s); } else { s.losses++; onBtcLoss(s); }
+  logFn((won?'🟢':'🔴')+' ['+cfg.label+'] '+exitType+' '+pos.side.toUpperCase()+' @ '+fl4(cp)+' | P&L '+(actualPnl>=0?'+':'')+'$'+actualPnl.toFixed(2)+' | → $'+s.betAmount+' L'+s.betLevel);
+  s.trades.push({ type:exitType, side:pos.side.toUpperCase(), entryPrice:fl4(pos.entryPrice), exitPrice:fl4(cp), amount:pos.amount, pnl:fl4(actualPnl), won, betLevel:pos.betLevel, at:new Date().toISOString() });
+  if (s.trades.length > 100) s.trades = s.trades.slice(-100);
+  s.openPosition = null;
+  saveBtcState(cfg);
+}
+
+// Check resolution for completed windows
+async function btcResolve(cfg) {
+  const s = btcStates[cfg.key];
+  if (!s || !s.openPosition) return;
+  const pos = s.openPosition;
+  const ws = btcWindowStart(cfg.windowSize);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (pos.windowStart >= ws) return;
+  if (nowSec < pos.windowStart + cfg.windowSize + 60) return;
+  const slug = cfg.marketSlug+'-'+pos.windowStart;
+  try {
+    const data = await getJson(GAMMA + '/markets/slug/' + slug);
+    const mkt = data?.markets?.length ? data.markets[0] : data;
+    if (!mkt || !mkt.closed) return;
+    let outcomePrices = mkt.outcomePrices;
+    let outcomes = mkt.outcomes;
+    if (typeof outcomePrices === 'string') outcomePrices = JSON.parse(outcomePrices);
+    if (typeof outcomes === 'string') outcomes = JSON.parse(outcomes);
+    if (!Array.isArray(outcomePrices) || outcomePrices.length < 2) return;
+    let upI = 0, dnI = 1;
+    if (Array.isArray(outcomes)) {
+      const ui = outcomes.findIndex(o => /up/i.test(String(o)));
+      const di = outcomes.findIndex(o => /down/i.test(String(o)));
+      if (ui >= 0) upI = ui; if (di >= 0) dnI = di;
+    }
+    const upRes = parseFloat(outcomePrices[upI]) || 0;
+    const dnRes = parseFloat(outcomePrices[dnI]) || 0;
+    if (upRes < 0.99 && dnRes < 0.99) return;
+    const wonUp = upRes >= 0.99;
+    const tradeWon = (pos.side === 'up') === wonUp;
+    const settlePrice = tradeWon ? 1.00 : 0.00;
+    const gross = fl4(pos.shares * settlePrice);
+    const actualPnl = fl4(gross - pos.netOut);
+    s.balance = addF(s.balance, gross);
+    s.totalPnl = fl4(s.totalPnl + actualPnl);
+    if (tradeWon) { s.wins++; onBtcWin(s); } else { s.losses++; onBtcLoss(s); }
+    s.streak.push(wonUp ? 'up' : 'down');
+    if (s.streak.length > 20) s.streak = s.streak.slice(-20);
+    logFn((tradeWon?'🟢':'🔴')+' ['+cfg.label+'] RESOLVED '+pos.side.toUpperCase()+' | P&L '+(actualPnl>=0?'+':'')+'$'+actualPnl.toFixed(2)+' | '+(wonUp?'UP':'DOWN')+' | → $'+s.betAmount+' L'+s.betLevel);
+    s.trades.push({ type:'RESOLVE', side:pos.side.toUpperCase(), entryPrice:fl4(pos.entryPrice), exitPrice:fl4(settlePrice), amount:pos.amount, pnl:fl4(actualPnl), won:tradeWon, betLevel:pos.betLevel, at:new Date().toISOString() });
+    if (s.trades.length > 100) s.trades = s.trades.slice(-100);
+    s.openPosition = null;
+    saveBtcState(cfg);
+  } catch (_) {}
+}
+
+// Window rollover tracking
+function btcCheckWindow(cfg) {
+  const s = btcStates[cfg.key];
+  if (!s) return;
+  const ws = btcWindowStart(cfg.windowSize);
+  if (s.currentWindowStart !== ws) {
+    s.currentWindowStart = ws;
+    const w = btcMarketCache[cfg.key+':'+ws];
+    if (w) { s.upToken = w.upToken; s.dnToken = w.dnToken; }
+  }
+}
+
+// Snapshot helper
+function btcSnapshot(cfg) {
+  const s = btcStates[cfg.key];
+  if (!s) return null;
+  const ws = btcWindowStart(cfg.windowSize);
+  const elapsed = btcElapsed(cfg.windowSize);
+  const remaining = btcRemaining(cfg.windowSize);
+  const w = btcMarketCache[cfg.key+':'+ws];
+  const upPrice = w ? fl4(getPrice(w.upToken)) : 0;
+  const dnPrice = w ? fl4(getPrice(w.dnToken)) : 0;
+  const pos = s.openPosition;
+  let livePnl = null, ourPrice = null;
+  if (pos && pos.windowStart === ws) {
+    ourPrice = fl4(getPrice(pos.token));
+    livePnl = fl4(pos.shares * ourPrice - pos.netOut);
+  }
+  const tt = (s.wins||0)+(s.losses||0);
+  return {
+    label: cfg.label, key: cfg.key, windowSize: cfg.windowSize,
+    balance: fl2(s.balance), totalPnl: fl4(s.totalPnl), totalFees: fl4(s.totalFees),
+    wins: s.wins||0, losses: s.losses||0, winRate: tt>0?fl4(s.wins/tt):0,
+    betAmount: fl2(s.betAmount), betLevel: s.betLevel, maxBetReached: s.maxBetReached,
+    windowStart: ws, elapsed, remaining,
+    upPrice, dnPrice, btcPrice: btcBtcPrice,
+    streak: s.streak||[], recentTrades: s.trades.slice(-30),
+    openPosition: pos ? { side:pos.side, entryPrice:fl4(pos.entryPrice), amount:fl2(pos.amount), tpPrice:pos.tpPrice, stopPrice:pos.stopPrice, ourPrice, livePnl, reason:pos.reason, betLevel:pos.betLevel } : null,
+    livePnl,
+  };
+}
 // ═══════════════════════════════════════════════════════════════════════
 // CLOB INIT (real trading)
 // ═══════════════════════════════════════════════════════════════════════
@@ -611,6 +992,14 @@ function buildSnapshot() {
       gameStartTime: cfg.gameStartTime, countdown,
     });
   }
+
+  // ── BTC 5m & 15m
+  snap.btc = {};
+  for (const btcCfg of Object.values(BTC_CONFIGS)) {
+    const btcSnap = btcSnapshot(btcCfg);
+    if (btcSnap) snap.btc[btcCfg.key] = btcSnap;
+  }
+  snap.btcPrice = btcBtcPrice;
   return snap;
 }
 
@@ -637,6 +1026,16 @@ async function tick() {
     await fifaEntry();
     fifaManage();
 
+
+    // BTC
+    for (const btcCfg of Object.values(BTC_CONFIGS)) {
+      await refreshBtcMarkets(btcCfg);
+      await pollBtcPrices(btcCfg);
+      btcCheckWindow(btcCfg);
+      await btcEntry(btcCfg);
+      btcManage(btcCfg);
+      await btcResolve(btcCfg);
+    }
     // Heartbeat
     tickCount++;
     if (tickCount % 10 === 0) {
@@ -646,8 +1045,7 @@ async function tick() {
         parts.push(`${sport}:${live}/${ms.length}`);
       }
       const balParts = Object.entries(sportsState).map(([s,st]) => `${s}=$${fl2(st.balance||0)}`);
-      logFn(`💓 ${parts.join(' | ')} | ${balParts.join(' ')} | FIFA:${fifaMatches.length}`);
-    }
+      logFn(`💓 ${parts.join(' | ')} | ${balParts.join(' ')} | FIFA:${fifaMatches.length} | BTC:$${fl2(btcStates.btc_5m?.balance||0)}/$${fl2(btcStates.btc_15m?.balance||0)}`);    }
 
     emitFn('snapshot', buildSnapshot());
   } catch (e) {
@@ -672,6 +1070,14 @@ async function start(emit, logEmit) {
   await discoverFifa();
   await pollSportsPrices();
   await refreshFifa();
+  // ── BTC init
+  loadBtcState(BTC_CONFIGS.btc_5m);
+  loadBtcState(BTC_CONFIGS.btc_15m);
+  connectBtcPrice();
+  await refreshBtcMarkets(BTC_CONFIGS.btc_5m);
+  await refreshBtcMarkets(BTC_CONFIGS.btc_15m);
+  logFn(`✅ BTC 5M: $${fl2(btcStates.btc_5m?.balance||0)} | BTC 15M: $${fl2(btcStates.btc_15m?.balance||0)}`);
+  logFn(`🚀 Polymarket Bot | Sports + FIFA + BTC`);
   setTimeout(tick, 2000);
   setInterval(tick, 3000);
 }

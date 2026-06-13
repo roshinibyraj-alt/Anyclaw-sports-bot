@@ -63,6 +63,9 @@ footer{text-align:center;padding:12px;font-size:9px;color:var(--muted)}
 <main>
   <div class="section"><div class="stitle">Sports <span id="spsum" style="font-size:9px;letter-spacing:0;color:var(--muted)"></span></div>
   <div class="grid" id="sg"></div>
+  <div class="section"><div class="stitle">BTC Up/Down <span id="btcn" style="font-size:9px;color:var(--muted)"></span></div>
+  <div id="btc-panels"></div></div>
+
   <div class="section" style="margin-top:8px"><div class="stitle">FIFA World Cup <span id="fcn" style="font-size:9px;color:var(--muted)"></span></div>
   <div id="fc"></div>
 </main>
@@ -149,6 +152,67 @@ function r(d){
     }else{th.innerHTML='<div class="empty">No trades</div>';}
   });
   _cache._built=true;
+
+  // BTC
+  var btcPanels=document.getElementById('btc-panels'), btcn=document.getElementById('btcn');
+  var btc=d.btc||{};
+  var btcPrice=d.btcPrice||0;
+  btcn.textContent=Object.keys(btc).length+' windows';
+  var btcHtml='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+  var BTC_ORDER=['btc_5m','btc_15m'];
+  BTC_ORDER.forEach(function(k){
+    var b=btc[k];if(!b){btcHtml+='<div class="match"><div class="empty">No data</div></div>';return;}
+    var pos=b.openPosition, lp=b.livePnl||0;
+    var elapsed=b.elapsed||0, remaining=b.remaining||0, ws=b.windowSize||0;
+    var pct=ws>0?(elapsed/ws*100).toFixed(0):0;
+    var cdM=Math.floor(remaining/60), cdS=remaining%60;
+    var cdStr=cdM.toString().padStart(2,'0')+':'+cdS.toString().padStart(2,'0');
+    var cdCls=remaining<30?'color:var(--red)':(remaining<60?'color:var(--yellow)':'color:var(--green)');
+    var upCol=b.upPrice>=0.5?'color:var(--green)':'color:var(--red)';
+    var dnCol=b.dnPrice>=0.5?'color:var(--green)':'color:var(--red)';
+    var streakHtml='';
+    if(b.streak&&b.streak.length){
+      streakHtml='<div style="font-size:8px;color:var(--muted);margin:2px 0">Streak: '+b.streak.slice(-5).map(function(s){return s==='up'?'<span style="color:var(--green)">▲</span>':'<span style="color:var(--red)">▼</span>'}).join(' ')+'</div>';
+    }
+    var ph='';
+    if(pos){
+      var pc=lp>=0?'pos':'neg';
+      var sn=(pos.side||'')==='up'?'UP':'DOWN';
+      var pnlStr=(lp>=0?'+':'')+lp.toFixed(2);
+      ph='<div class="pos-box"><span>📈 '+sn+' @ '+(pos.entryPrice||0).toFixed(3)+
+        ' | TP:'+(pos.tpPrice||0).toFixed(3)+' SL:'+(pos.stopPrice||0).toFixed(3)+
+        ' L'+(pos.betLevel||0)+'</span><span class="pos-pnl '+pc+'">'+pnlStr+'</span></div>';
+    }
+    var th='';
+    if(b.recentTrades&&b.recentTrades.length){
+      th='<div class="tf" style="max-height:80px">'+b.recentTrades.slice().reverse().slice(0,8).map(function(t){
+        var c=t.type==='ENTRY'?'':(t.won?'w':'l'),p='';
+        if(t.type!=='ENTRY')p=' <span class="pn '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
+        return '<div class="tr '+c+'"><span class="ty">'+(t.type||'')+'</span><span class="nm">'+t.side+'</span>'+p+'</div>';
+      }).join('')+'</div>';
+    }
+    var btcSpot=b.btcPrice?'<span style="margin-left:8px">₿ $'+(b.btcPrice||0).toFixed(0)+'</span>':'';
+    var wr=b.totalTrades>0?(b.wins/b.totalTrades*100).toFixed(0)+'%':'-';
+    var pnlCls=b.totalPnl>=0?'pos':'neg';
+    btcHtml+='<div class="match">'+
+      '<div class="mh"><div class="mt" style="font-weight:700;font-size:12px">'+b.label+btcSpot+'</div>'+
+      '<div style="font-size:10px;color:var(--muted)">$'+(b.balance||0).toFixed(0)+' | W'+(b.wins||0)+'/L'+(b.losses||0)+' ('+wr+')</div></div>'+
+      '<div style="display:flex;gap:3px;margin:3px 0">'+
+        '<div style="background:var(--dim);padding:2px 8px;border-radius:4px;font-size:11px;text-align:center;flex:1">'+
+          '<div style="font-size:8px;color:var(--muted)">BTC ▲ UP</div><div style="'+upCol+';font-weight:700">'+(b.upPrice||0).toFixed(3)+'</div></div>'+
+        '<div style="background:var(--dim);padding:2px 8px;border-radius:4px;font-size:11px;text-align:center;flex:1">'+
+          '<div style="font-size:8px;color:var(--muted)">BTC ▼ DOWN</div><div style="'+dnCol+';font-weight:700">'+(b.dnPrice||0).toFixed(3)+'</div></div>'+
+      '</div>'+
+      '<div style="display:flex;align-items:center;gap:6px;margin:3px 0">'+
+        '<span style="font-size:18px;font-weight:700;'+cdCls+'">'+cdStr+'</span>'+
+        '<div style="flex:1;background:var(--dim);height:4px;border-radius:2px;overflow:hidden">'+
+          '<div style="height:100%;width:'+pct+'%;background:'+(remaining<30?'var(--red)':(remaining<60?'var(--yellow)':'var(--green)'))+';border-radius:2px"></div></div>'+
+        '<span style="font-size:9px;color:var(--muted)">'+pct+'%</span></div>'+
+      '<div style="font-size:8px;color:var(--muted)">Bet: $'+(b.betAmount||0).toFixed(0)+' L'+(b.betLevel||0)+'</div>'+
+      streakHtml+ph+th+'<div style="font-size:8px;color:var(--muted);margin-top:2px">P&L: <span class="'+pnlCls+'">'+(b.totalPnl>=0?'+':'')+'$'+(b.totalPnl||0).toFixed(2)+'</span> | Fees: $'+(b.totalFees||0).toFixed(2)+'</div></div>';
+  });
+  btcHtml+='</div>';
+  btcPanels.innerHTML=btcHtml;
 
   // FIFA
   var fc=document.getElementById('fc'), fcn=document.getElementById('fcn');

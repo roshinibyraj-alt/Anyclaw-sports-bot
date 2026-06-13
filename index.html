@@ -52,6 +52,11 @@ footer{text-align:center;padding:12px;font-size:9px;color:var(--muted)}
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--dim);border-radius:3px}
+.tog{background:none;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;margin-left:4px}
+.tog:hover{background:var(--bg3);color:var(--white)}
+.tog.on{background:var(--dim);color:var(--white)}
+.coll{overflow:hidden;transition:max-height 0.2s}
+.coll.hide{max-height:0!important}
 </style>
 </head>
 <body>
@@ -82,6 +87,14 @@ var _timer=null,_snap=null,_cache={};
 function qs(a,b){return a?document.querySelector('#'+a+' .'+b):null}
 function txt(el,v){if(el&&el.textContent!==v)el.textContent=v}
 
+function toggleCollapse(k,section){
+  if(!_cache._coll)_cache._coll={};
+  if(!_cache._coll[k])_cache._coll[k]={m:false,t:false};
+  _cache._coll[k][section]=!_cache._coll[k][section];
+  var el=document.getElementById(section==='m'?'cmm-'+k:'cth-'+k);
+  var btn=document.getElementById(section==='m'?'tgm-'+k:'tgt-'+k);
+  if(el){el.classList.toggle('hide');btn.textContent=_cache._coll[k][section]?'+':'−';}
+}
 function r(d){
   _snap=d;
   var sp=d.sports||{},fm=d.fifaMatches||[];
@@ -108,8 +121,16 @@ function r(d){
       card=document.createElement('div');card.id='card-'+k;card.className='card';
       card.innerHTML='<div class="ch"><div class="ct">'+sc.label+'</div><div class="cb" id="cb-'+k+'">$0</div></div>'+
         '<div class="cp" id="cp-'+k+'"></div>'+
-        '<div id="mm-'+k+'"></div>'+
-        '<div class="stitle" style="font-size:9px;margin:6px 0 3px">Trades</div><div id="th-'+k+'"><div class="empty">No trades</div></div>';
+        '<div style="display:flex;align-items:center;margin:4px 0">'+
+          '<span class="stitle" style="flex:1;border:none;padding:0;margin:0">Markets</span>'+
+          '<button class="tog" id="tgm-'+k+'" onclick="toggleCollapse(\''+k+'\',\'m\')">−</button></div>'+
+        '<div class="coll" id="cmm-'+k+'"><div id="mm-'+k+'"></div></div>'+
+        '<div style="display:flex;align-items:center;margin:4px 0">'+
+          '<span class="stitle" style="flex:1;border:none;padding:0;margin:0">Trades</span>'+
+          '<button class="tog" id="tgt-'+k+'" onclick="toggleCollapse(\''+k+'\',\'t\')">−</button></div>'+
+        '<div class="coll" id="cth-'+k+'"><div id="th-'+k+'"><div class="empty">No trades</div></div></div>';
+      if(!_cache._coll) _cache._coll={};
+      if(_cache._coll[k]==null) _cache._coll[k]={m:false,t:false};
       sg.appendChild(card);
     }
     var b=sc.floatingBalance!=null?sc.floatingBalance:sc.balance;
@@ -141,6 +162,9 @@ function r(d){
       mh+='</div>';
     });
     mm.innerHTML=mh;
+    // Sync collapse state
+    var cmm=document.getElementById('cmm-'+k);
+    if(cmm&&_cache._coll&&_cache._coll[k]&&_cache._coll[k].m){cmm.classList.add('hide');document.getElementById('tgm-'+k).textContent='+';}
 
     // Trade history
     var th=document.getElementById('th-'+k);
@@ -152,6 +176,9 @@ function r(d){
         return '<div class="tr '+c+'"><span class="ty">'+(t.type||'')+'</span><span class="nm">'+n+'</span>'+p+'<span class="tm">'+(t.at?t.at.slice(11,19):'')+'</span></div>';
       }).join('')+'</div>';
     }else{th.innerHTML='<div class="empty">No trades</div>';}
+    // Sync trade collapse state
+    var cth=document.getElementById('cth-'+k);
+    if(cth&&_cache._coll&&_cache._coll[k]&&_cache._coll[k].t){cth.classList.add('hide');document.getElementById('tgt-'+k).textContent='+';}
   });
   _cache._built=true;
 

@@ -257,7 +257,7 @@ async function checkSportsEntries() {
         md.entries++;
         logFn(`📈 [${cfg.label}] ${m.title} | BUY ${signal.buySide} @ ${fl4(signal.entryPrice)} | $${betAmount} | ${signal.reason}`);
         if (!st.recentTrades) st.recentTrades = [];
-        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide.toUpperCase(), entryPrice: fl4(signal.entryPrice), name: signal.buySide==="A"?(pos.outcomeA||m.outcomeA||"A"):(pos.outcomeB||m.outcomeB||"B"), amount: betAmount, at: new Date().toISOString() });
+        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide.toUpperCase(), entryPrice: fl4(signal.entryPrice), name: signal.buySide==="A"?(m.outcomeA||m.outcomeA||"A"):(m.outcomeB||m.outcomeB||"B"), amount: betAmount, at: new Date().toISOString() });
         if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
         saveSportsState(sport);
       } catch (e) { logFn(`⚠️ Sports entry [${sport}]: ${e.message}`); }
@@ -356,7 +356,7 @@ async function discoverFifa() {
       const cfg = {
         key: 'fifa-'+matchId, label: '⚽ '+(e.title||'?'), matchId, slug: e.slug||'', eventId: e.id||'',
         gameStartTime: (function(){ try { for (const mm of (e.markets||[])) { if (mm.gameStartTime) return mm.gameStartTime; if (mm.endDate) return new Date(new Date(mm.endDate).getTime()-7200000).toISOString(); } } catch(_){} return null; })(),
-        subMarkets: subs, baseBetPct: 0.10, tpPrice: 0.45, stopPrice: 0.03, spikeLookbackMs: 15000, spikeThreshold: 0.012, arbThreshold: 0.030,
+        subMarkets: subs, baseBetPct: 0.10, tpPrice: 0.45, stopPrice: 0.03, spikeLookbackMs: 15000, spikeThreshold: 0.008, arbThreshold: 0.020,
         stateFile: path.join(__dirname, 'state_fifa_'+matchId+'.json'),
       };
       loadFifaState(cfg);

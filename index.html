@@ -55,7 +55,7 @@ footer{text-align:center;padding:12px;font-size:9px;color:var(--muted)}
 .tog{background:none;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;margin-left:4px}
 .tog:hover{background:var(--bg3);color:var(--white)}
 .tog.on{background:var(--dim);color:var(--white)}
-.coll{overflow:hidden;transition:max-height 0.2s}
+.coll{overflow:hidden;transition:max-height 0.2s;max-height:2000px}
 .coll.hide{max-height:0!important}
 </style>
 </head>
@@ -93,7 +93,7 @@ function toggleCollapse(k,section){
   _cache._coll[k][section]=!_cache._coll[k][section];
   var el=document.getElementById(section==='m'?'cmm-'+k:'cth-'+k);
   var btn=document.getElementById(section==='m'?'tgm-'+k:'tgt-'+k);
-  if(el){el.classList.toggle('hide');btn.textContent=_cache._coll[k][section]?'+':'−';}
+  if(el){el.classList.toggle('hide');btn.textContent=_cache._coll[k][section]?'+':'-';}
 }
 function r(d){
   _snap=d;
@@ -123,11 +123,11 @@ function r(d){
         '<div class="cp" id="cp-'+k+'"></div>'+
         '<div style="display:flex;align-items:center;margin:4px 0">'+
           '<span class="stitle" style="flex:1;border:none;padding:0;margin:0">Markets</span>'+
-          '<button class="tog" id="tgm-'+k+'" onclick="toggleCollapse(\''+k+'\',\'m\')">−</button></div>'+
+          '<button class="tog" id="tgm-'+k+'" onclick="toggleCollapse(\''+k+'\',\'m\')">-</button></div>'+
         '<div class="coll" id="cmm-'+k+'"><div id="mm-'+k+'"></div></div>'+
         '<div style="display:flex;align-items:center;margin:4px 0">'+
           '<span class="stitle" style="flex:1;border:none;padding:0;margin:0">Trades</span>'+
-          '<button class="tog" id="tgt-'+k+'" onclick="toggleCollapse(\''+k+'\',\'t\')">−</button></div>'+
+          '<button class="tog" id="tgt-'+k+'" onclick="toggleCollapse(\''+k+'\',\'t\')">-</button></div>'+
         '<div class="coll" id="cth-'+k+'"><div id="th-'+k+'"><div class="empty">No trades</div></div></div>';
       if(!_cache._coll) _cache._coll={};
       if(_cache._coll[k]==null) _cache._coll[k]={m:false,t:false};

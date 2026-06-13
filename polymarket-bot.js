@@ -66,7 +66,7 @@ const SPORTS_CFG = {
   tennis:   { label: 'Tennis',   capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Tennis',   matchTags: ['tennis','atp','wta','challenger','libema','slam','open'],                  seedPatterns: ['tennis','atp','wta','slam','open','challenger'] },
   cricket:  { label: 'Cricket',  capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Cricket',  matchTags: ['cricket','t20','odi','bbl','ipl','test','icc','women','world cup','crint'], seedPatterns: ['icc','t20','world cup','crint','cricket'] },
   football: { label: 'Football', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Soccer',   matchTags: ['soccer','football','world cup','fifa','uefa','premier','champions'],         seedPatterns: ['soccer','football','fifa','uefa','champions','world cup'] },
-  mlb: { label: 'MLB', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'MLB', matchTags: ['mlb','baseball'], seedPatterns: ['mlb','baseball'] }
+  mlb: { label: 'MLB', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, maxConcurrent: 2, gammaTag: 'MLB', matchTags: ['mlb','baseball'], seedPatterns: ['mlb','baseball'] }
 };
 
 const sportsState = {};
@@ -202,6 +202,15 @@ async function checkSportsEntries() {
         if (!st) continue;
         if (!st[k]) st[k] = { openPosition: null, priceHistory: [], entries: 0, wins: 0, losses: 0 };
         const md = st[k];
+        // Max concurrent trades limit (e.g., MLB max 2 at a time)
+        if (cfg.maxConcurrent) {
+          var openCount = 0;
+          for (const other of (sportsDiscovery[sport] || [])) {
+            const ok = matchKey(other.matchId);
+            if (st[ok] && st[ok].openPosition) openCount++;
+          }
+          if (openCount >= cfg.maxConcurrent) continue;
+        }
         if (md.openPosition) continue;
         if (!m.isLive) {
           // Skip non-live unless recent price movement

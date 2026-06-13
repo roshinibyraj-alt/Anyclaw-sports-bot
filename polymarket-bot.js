@@ -139,7 +139,7 @@ async function discoverSports() {
         let tokens = []; try { tokens = JSON.parse(ml.clobTokenIds || '[]'); } catch (_) {}
         if (tokens.length < 2) continue;
         seen.add(e.id);
-        found.push({ matchId: String(e.id), sport: sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
+        found.push({ matchId: String(e.id), sport: sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], outcomeA: (JSON.parse(ml.outcomes||"[]")||[])[0]||"A", outcomeB: (JSON.parse(ml.outcomes||"[]")||[])[1]||"B", isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
         if (found.length >= 10) break;
       if (found.length === 0) {
         const all = await getJsonArray(GAMMA + '/events?closed=false&live=true&limit=50');
@@ -155,7 +155,7 @@ async function discoverSports() {
           const liq = ml.liquidityNum || 0; if (liq < 300) continue;
           let tokens = []; try { tokens = JSON.parse(ml.clobTokenIds || '[]'); } catch (_) {}
           if (tokens.length < 2) continue;
-          found.push({ matchId: String(e.id), sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
+          found.push({ matchId: String(e.id), sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], outcomeA: (JSON.parse(ml.outcomes||"[]")||[])[0]||"A", outcomeB: (JSON.parse(ml.outcomes||"[]")||[])[1]||"B", isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
           if (found.length >= 10) break;
         }
       }
@@ -257,7 +257,7 @@ async function checkSportsEntries() {
         md.entries++;
         logFn(`📈 [${cfg.label}] ${m.title} | BUY ${signal.buySide} @ ${fl4(signal.entryPrice)} | $${betAmount} | ${signal.reason}`);
         if (!st.recentTrades) st.recentTrades = [];
-        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide.toUpperCase(), entryPrice: fl4(signal.entryPrice), amount: betAmount, at: new Date().toISOString() });
+        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide.toUpperCase(), entryPrice: fl4(signal.entryPrice), name: signal.buySide==="A"?(pos.outcomeA||m.outcomeA||"A"):(pos.outcomeB||m.outcomeB||"B"), amount: betAmount, at: new Date().toISOString() });
         if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
         saveSportsState(sport);
       } catch (e) { logFn(`⚠️ Sports entry [${sport}]: ${e.message}`); }
@@ -294,7 +294,7 @@ function manageSportsPositions() {
         if (won) { st.wins++; st[k].wins++; } else { st.losses++; st[k].losses++; }
         logFn(`${won?'🟢':'🔴'} [${cfg.label}] ${m.title} | ${exitType} ${pos.side} @ ${fl4(cp)} | P&L ${actualPnl>=0?'+':''}$${actualPnl.toFixed(2)}`);
         if (!st.recentTrades) st.recentTrades = [];
-        st.recentTrades.push({ type: exitType, side: pos.side.toUpperCase(), entryPrice: fl4(pos.entryPrice), exitPrice: fl4(cp), amount: pos.amount, pnl: fl4(actualPnl), won, at: new Date().toISOString() });
+        st.recentTrades.push({ type: exitType, side: pos.side.toUpperCase(), entryPrice: fl4(pos.entryPrice), exitPrice: fl4(cp), name: pos.side==="A"?(pos.outcomeA||m.outcomeA||"A"):(pos.outcomeB||m.outcomeB||"B"), amount: pos.amount, pnl: fl4(actualPnl), won, at: new Date().toISOString() });
         if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
         st[k].openPosition = null;
         saveSportsState(sport);

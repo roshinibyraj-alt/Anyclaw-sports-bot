@@ -48,7 +48,7 @@ main{padding:8px;max-width:700px;margin:0 auto;display:flex;flex-direction:colum
 .trade.w{background:#00e67608}
 .trade.l{background:#ff3d5708}
 .t-type{font-size:7px;padding:1px 3px;border-radius:2px;background:var(--dim);flex-shrink:0}
-.t-side{font-weight:600;font-size:9px}
+.t.name||t.side{font-weight:600;font-size:9px}
 .t-pnl{font-weight:700;font-size:10px;margin-left:auto}
 .t-pnl.g{color:var(--green)}
 .t-pnl.r{color:var(--red)}
@@ -116,7 +116,7 @@ function render(d){
         var cls=t.type==='ENTRY'?'':(t.won?'w':'l');
         var pnlStr='';
         if(t.type!=='ENTRY')pnlStr=' <span class="t-pnl '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
-        return '<div class="trade '+cls+'"><span class="t-type">'+(t.type||'')+'</span><span class="t-side">'+(t.side||'')+'</span>'+pnlStr+'<span class="t-time">'+(t.at?t.at.slice(11,19):'')+'</span></div>';
+        return '<div class="trade '+cls+'"><span class="t-type">'+(t.type||'')+'</span><span class="t.name||t.side">'+(t.name||t.side||'')+'</span>'+pnlStr+'<span class="t-time">'+(t.at?t.at.slice(11,19):'')+'</span></div>';
       }).join('');
     } else { tradesHtml='<div class="t-empty">No trades</div>'; }
     return '<div class="card"><div class="card-head"><div class="card-name">'+(sc.label||sk)+' <span class="badge">W'+sc.wins+'/L'+sc.losses+' ('+wr+')</span></div>'+
@@ -140,7 +140,7 @@ function render(d){
         var cls=t.type==='ENTRY'?'':(t.won?'w':'l');
         var pnlStr='';
         if(t.type!=='ENTRY')pnlStr=' <span class="t-pnl '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
-        return '<div class="trade '+cls+'"><span class="t-type">'+(t.type||'')+'</span><span class="t-side">'+(t.side||'')+'</span>'+pnlStr+'</div>';
+        return '<div class="trade '+cls+'"><span class="t-type">'+(t.type||'')+'</span><span class="t.name||t.side">'+(t.name||t.side||'')+'</span>'+pnlStr+'</div>';
       }).join('');
     }
     var wr=m.totalTrades>0?(m.wins/m.totalTrades*100).toFixed(0)+'%':'-';

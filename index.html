@@ -131,7 +131,9 @@ function r(d){
         c=' <span class="m-cd" data-cd="'+m.countdown+'">'+hh.toString().padStart(2,'0')+':'+mm.toString().padStart(2,'0')+':'+ss.toString().padStart(2,'0')+'</span>';
       }
       mh+='<div class="match"><div class="mh"><div class="mt">'+(m.title||'')+(m.isLive?'<span class="live">🔴 LIVE</span>':'')+'</div>'+c+'</div>'+
-        '<div class="mh"><div class="mpr">'+(m.prices?m.prices.map(function(p){return'<span style="background:var(--dim);padding:1px 5px;border-radius:3px">'+p.toFixed(3)+'</span>'}).join(''):'')+'</div></div>';
+        '<div class="mh"><div class="mpr">'+(m.prices?m.prices.map(function(p){return'<span style="background:var(--dim);padding:1px 5px;border-radius:3px">'+p.toFixed(3)+'</span>'}).join(''):'')+'</div></div>'+
+        (m.sportScore?'<div style="font-size:10px;color:var(--muted);margin:1px 0">🏏 '+m.sportScore+'</div>':'')+
+        (m.favoriteName?'<div style="font-size:9px;color:var(--muted);margin:1px 0">⭐ Fav: '+m.favoriteName+'</div>':'');
       if(m.openPosition){
         var pc=(m.livePnl||0)>=0?'pos':'neg';
         mh+='<div class="pos-box"><span>📈 '+(m.openPosition.side||'')+' @ '+(m.openPosition.entryPrice||0).toFixed(3)+'</span><span class="pos-pnl '+pc+'">'+((m.livePnl||0)>=0?'+':'')+(m.livePnl||0).toFixed(2)+'</span></div>';
@@ -144,8 +146,8 @@ function r(d){
     var th=document.getElementById('th-'+k);
     if(sc.recentTrades&&sc.recentTrades.length){
       th.innerHTML='<div class="tf">'+sc.recentTrades.slice().reverse().slice(0,15).map(function(t){
-        var c=t.type==='ENTRY'?'':(t.won?'w':'l'),p='';
-        if(t.type!=='ENTRY')p=' <span class="pn '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
+        var c=(t.type==='ENTRY'||t.type==='ENTRY_LIMIT'||t.type==='ENTRY_MARKET')?'':(t.won?'w':'l'),p='';
+        if(t.type!=='ENTRY'&&t.type!=='ENTRY_LIMIT'&&t.type!=='ENTRY_MARKET')p=' <span class="pn '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
         var n=t.name||t.side||'';
         return '<div class="tr '+c+'"><span class="ty">'+(t.type||'')+'</span><span class="nm">'+n+'</span>'+p+'<span class="tm">'+(t.at?t.at.slice(11,19):'')+'</span></div>';
       }).join('')+'</div>';
@@ -186,8 +188,8 @@ function r(d){
     var th='';
     if(b.recentTrades&&b.recentTrades.length){
       th='<div class="tf" style="max-height:80px">'+b.recentTrades.slice().reverse().slice(0,8).map(function(t){
-        var c=t.type==='ENTRY'?'':(t.won?'w':'l'),p='';
-        if(t.type!=='ENTRY')p=' <span class="pn '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
+        var c=(t.type==='ENTRY'||t.type==='ENTRY_LIMIT'||t.type==='ENTRY_MARKET')?'':(t.won?'w':'l'),p='';
+        if(t.type!=='ENTRY'&&t.type!=='ENTRY_LIMIT'&&t.type!=='ENTRY_MARKET')p=' <span class="pn '+(t.pnl>=0?'g':'r')+'">'+(t.pnl>=0?'+':'')+(t.pnl||0).toFixed(2)+'</span>';
         return '<div class="tr '+c+'"><span class="ty">'+(t.type||'')+'</span><span class="nm">'+t.side+'</span>'+p+'</div>';
       }).join('')+'</div>';
     }

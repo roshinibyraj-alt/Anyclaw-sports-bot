@@ -39,6 +39,7 @@ const fl2 = n => Math.round(n * 100) / 100;
 const fl4 = n => Math.round(n * 10000) / 10000;
 const addF = (a, b) => fl2((a * 100 + b * 100) / 100);
 const subF = (a, b) => fl2((a * 100 - b * 100) / 100);
+const clk = () => Math.floor(Date.now() / 1000);
 
 const priceBook = {};
 let clobClient = null;
@@ -66,12 +67,22 @@ const SPORTS_CFG = {
   tennis:   { label: 'Tennis',   capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Tennis',   matchTags: ['tennis','atp','wta','challenger','libema','slam','open'],                     seedPatterns: ['tennis','atp','wta','slam','open','challenger'] },
   cricket:  { label: 'Cricket',  capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Cricket',  matchTags: ['cricket','t20','odi','bbl','ipl','test','icc','women','world cup','crint'],   seedPatterns: ['icc','t20','world cup','crint','cricket'] },
   football: { label: 'Football', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Soccer',   matchTags: ['soccer','football','world cup','fifa','uefa','premier','champions'],           seedPatterns: ['soccer','football','fifa','uefa','champions','world cup'] },
-  esports:  { label: 'Esports',  capital: 2000, threshold: 0.55, tpSpread: 0.12, stopSpread: 0.06, maxBetPct: 0.05, gammaTag: 'Esports', matchTags: ['esports','cs2','counter strike','dota','league of legends','lol','valorant','overwatch','rocket league','starcraft','fighting'], seedPatterns: ['esports','cs2','counter strike','dota','lol','valorant'] },
+  esports:  { label: 'Esports',  capital: 2000, threshold: 0.55, tpSpread: 0.18, stopSpread: 0.05, maxBetPct: 0.05, maxConcurrent: 2, gammaTag: 'Esports', matchTags: ['esports','cs2','counter strike','dota','league of legends','lol','valorant','overwatch','rocket league','starcraft','fighting'], seedPatterns: ['esports','cs2','counter strike','dota','lol','valorant'] },
 };
+
+const TENNIS_BREAK_DROP = 0.06;
+const TENNIS_BREAK_RECOVERY = 0.04;
+const TENNIS_HARD_SL = 0.10;
+const TENNIS_ENTRY_WINDOW = 30;
+
+const CRICKET_TP = 0.10;
+const CRICKET_HARD_SL = 0.05;
+const CRICKET_ENTRY_WINDOW = 30;
 
 const sportsState = {};
 const sportsDiscovery = {};
 let lastSportsDiscovery = 0;
+let cricketScoreCache = {};
 
 function loadSportsState() {
   for (const s of Object.keys(SPORTS_CFG)) {
@@ -139,7 +150,7 @@ async function discoverSports() {
         let tokens = []; try { tokens = JSON.parse(ml.clobTokenIds || '[]'); } catch (_) {}
         if (tokens.length < 2) continue;
         seen.add(e.id);
-        found.push({ matchId: String(e.id), sport: sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], outcomeA: (JSON.parse(ml.outcomes||"[]")||[])[0]||"A", outcomeB: (JSON.parse(ml.outcomes||"[]")||[])[1]||"B", isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
+        found.push({ matchId: String(e.id), sport: sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], outcomeA: (JSON.parse(ml.outcomes||"[]")||[])[0]||"A", outcomeB: (JSON.parse(ml.outcomes||"[]")||[])[1]||"B", isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now(), favoriteSide: null, cricketMatchId: null });
         if (found.length >= 10) break;
       if (found.length === 0) {
         const all = await getJsonArray(GAMMA + '/events?closed=false&live=true&limit=50');
@@ -155,7 +166,7 @@ async function discoverSports() {
           const liq = ml.liquidityNum || 0; if (liq < 300) continue;
           let tokens = []; try { tokens = JSON.parse(ml.clobTokenIds || '[]'); } catch (_) {}
           if (tokens.length < 2) continue;
-          found.push({ matchId: String(e.id), sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], outcomeA: (JSON.parse(ml.outcomes||"[]")||[])[0]||"A", outcomeB: (JSON.parse(ml.outcomes||"[]")||[])[1]||"B", isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now() });
+          found.push({ matchId: String(e.id), sport, title: e.title, conditionId: ml.conditionId, tokenA: tokens[0], tokenB: tokens[1], outcomeA: (JSON.parse(ml.outcomes||"[]")||[])[0]||"A", outcomeB: (JSON.parse(ml.outcomes||"[]")||[])[1]||"B", isLive: e.live === true, mlLiquidity: liq, discoveredAt: Date.now(), favoriteSide: null, cricketMatchId: null });
           if (found.length >= 10) break;
         }
       }
@@ -184,6 +195,13 @@ async function pollSportsPrices() {
               if (prices.length === 2 && prices[0] > 0 && prices[1] > 0) {
                 priceBook[m.tokenA] = { bid: Math.max(0.001, prices[0]-0.01), ask: Math.min(0.999, prices[0]+0.01) };
                 priceBook[m.tokenB] = { bid: Math.max(0.001, prices[1]-0.01), ask: Math.min(0.999, prices[1]+0.01) };
+                // Determine pre-match favorite on first price poll
+                if (m.favoriteSide === null && prices[0] > 0.01 && prices[1] > 0.01) {
+                  m.favoriteSide = prices[0] >= prices[1] ? 'A' : 'B';
+                  // Also store the favorite token ID for convenience
+                  m.favoriteTokenId = m.favoriteSide === 'A' ? m.tokenA : m.tokenB;
+                  m.underdogTokenId = m.favoriteSide === 'A' ? m.tokenB : m.tokenA;
+                }
               }
             }
           }
@@ -191,6 +209,96 @@ async function pollSportsPrices() {
       } catch (_) {}
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// CRICKET SCORE FEED — espncricinfo.com
+// ═══════════════════════════════════════════════════════════════════════
+async function pollCricketScores() {
+  try {
+    // Fetch live match index from espncricinfo
+    const res = await fetch('https://www.espncricinfo.com/ci/content/match/index.json', { timeout: 8000 });
+    if (!res.ok) return;
+    const idx = await res.json();
+    const liveMatches = idx || [];
+    const now = clk();
+    for (const lm of liveMatches) {
+      const title = (lm.team1Display || '') + ' vs ' + (lm.team2Display || '');
+      const homeTeam = (lm.team1Display || lm.team1 || '');
+      const awayTeam = (lm.team2Display || lm.team2 || '');
+      const matchId = String(lm.id || lm.object_id);
+      if (!matchId) continue;
+
+      // Try to match to a Polymarket cricket event by team names
+      let polyMatch = null;
+      for (const m of (sportsDiscovery.cricket || [])) {
+        const mt = (m.title || '').toLowerCase();
+        if (mt.includes(homeTeam.toLowerCase()) && mt.includes(awayTeam.toLowerCase())) {
+          polyMatch = m;
+          break;
+        }
+        // try partial match
+        if (homeTeam && awayTeam && (mt.includes(homeTeam.toLowerCase()) || mt.includes(awayTeam.toLowerCase()))) {
+          polyMatch = m;
+          break;
+        }
+      }
+      if (!polyMatch) continue;
+
+      // Fetch match details for score
+      const detailRes = await fetch('https://www.espncricinfo.com/matches/engine/match/' + matchId + '.json', { timeout: 8000 });
+      if (!detailRes.ok) continue;
+      const detail = await detailRes.json();
+      const innings = detail.innings || [];
+      let totalRun = 0, totalWicket = 0, totalOvers = 0, battingTeam = '';
+      let prevWickets = cricketScoreCache[matchId] ? cricketScoreCache[matchId].wickets : -1;
+
+      for (const inn of innings) {
+        if (inn.runs != null && inn.wickets != null) {
+          totalRun = inn.runs;
+          totalWicket = inn.wickets;
+          totalOvers = inn.overs || 0;
+          battingTeam = inn.battingTeam || inn.batting_team || '';
+          break;
+        }
+      }
+
+      // Fallback: parse from live status
+      if (totalRun === 0 && detail.live) {
+        const status = detail.live.status || '';
+        const m2 = status.match(/(\d+)\s*\/\s*(\d+)/);
+        if (m2) {
+          totalRun = parseInt(m2[1]);
+          totalWicket = parseInt(m2[2]);
+        }
+        const om = status.match(/([\d.]+)\s*ov/);
+        if (om) totalOvers = parseFloat(om[1]);
+        if (detail.live.team) battingTeam = detail.live.team;
+      }
+
+      // Detect wicket
+      const wicketEvent = prevWickets >= 0 && totalWicket > prevWickets;
+
+      cricketScoreCache[matchId] = {
+        runs: totalRun, wickets: totalWicket, overs: totalOvers,
+        battingTeam, homeTeam, awayTeam, title,
+        wicketEvent, wicketTime: wicketEvent ? now : (cricketScoreCache[matchId] ? cricketScoreCache[matchId].wicketTime : 0),
+        lastPollAt: now,
+      };
+      // Link cricket match ID to Polymarket match
+      if (polyMatch) polyMatch.cricketMatchId = matchId;
+    }
+  } catch (e) {
+    // silently fail — score feed is optional
+  }
+}
+
+function getCricketWicketSignal(matchId) {
+  const csc = cricketScoreCache[matchId];
+  if (!csc || !csc.wicketEvent) return null;
+  // Only signal for 30 seconds after wicket event
+  if (clk() - csc.wicketTime > 30) return null;
+  return { battingTeam: csc.battingTeam, runs: csc.runs, wickets: csc.wickets };
 }
 
 async function checkSportsEntries() {
@@ -202,7 +310,6 @@ async function checkSportsEntries() {
         if (!st) continue;
         if (!st[k]) st[k] = { openPosition: null, priceHistory: [], entries: 0, wins: 0, losses: 0 };
         const md = st[k];
-        // Max concurrent trades limit (e.g., MLB max 2 at a time)
         if (cfg.maxConcurrent) {
           var openCount = 0;
           for (const other of (sportsDiscovery[sport] || [])) {
@@ -211,67 +318,207 @@ async function checkSportsEntries() {
           }
           if (openCount >= cfg.maxConcurrent) continue;
         }
+        const now = Date.now();
+
+        // ── Tennis: Break detection on pre-match favorite ──
+        if (sport === 'tennis') {
+          if (!m.favoriteSide) continue; // no favorite locked yet
+          if (md.openPosition) continue;
+          const pFav = getPrice(m.favoriteTokenId);
+          const pDog = getPrice(m.underdogTokenId);
+          if (!pFav || pFav <= 0 || !pDog || pDog <= 0) continue;
+          // Track price history for the favorite price
+          if (!md.priceHistory) md.priceHistory = [];
+          const last = md.priceHistory.length > 0 ? md.priceHistory[md.priceHistory.length - 1] : null;
+          if (!last || now - last.t > 3000) {
+            md.priceHistory.push({ t: now, pFav, pDog, ts: Math.floor(now / 1000) });
+            if (md.priceHistory.length > 500) md.priceHistory.splice(0, 100);
+          }
+          // Need minimum data points
+          if (md.priceHistory.length < 5) continue;
+
+          // Compute running max & min of favorite price over last 120s
+          const cutoff = now - 120000;
+          const recent = md.priceHistory.filter(h => h.t >= cutoff);
+          if (recent.length < 3) continue;
+          const maxFav = Math.max(...recent.map(h => h.pFav));
+          const minFav = Math.min(...recent.map(h => h.pFav));
+          const dropFromMax = maxFav - pFav;
+
+          // Break detection: favorite price dropped significantly from recent high
+          // AND favorite is still the favorite (pFav > pDog) — they just conceded a break
+          if (dropFromMax >= TENNIS_BREAK_DROP && pFav > 0.01) {
+            // Place limit order at nearest ask
+            const book = priceBook[m.favoriteTokenId];
+            const limitPrice = book && book.ask > 0 ? fl4(book.ask) : fl4(pFav);
+            if (limitPrice <= 0) continue;
+            const balance = st.balance;
+            let betAmount = fl2(balance * cfg.maxBetPct);
+            if (betAmount < 5) continue;
+            const fRate = await getFeeRate(m.favoriteTokenId);
+            const entryFee = fl2(betAmount * fRate * (1 - limitPrice));
+            const totalCost = fl2(betAmount + entryFee);
+            const shares = fl4(betAmount / limitPrice);
+
+            md.openPosition = {
+              side: m.favoriteSide, tokenId: m.favoriteTokenId, entryPrice: limitPrice,
+              amount: betAmount, shares: 0, netOut: 0, feeRate: fRate,
+              tpPrice: fl4(limitPrice + TENNIS_BREAK_RECOVERY),
+              stopPrice: fl4(Math.max(0.001, limitPrice - TENNIS_HARD_SL)),
+              entryTime: now, entryType: 'limit',
+              limitPrice: limitPrice, limitPlacedAt: now,
+              limitFilled: false, reason: 'break fav ' + m.outcomeA + '/' + m.outcomeB + ' drop=' + fl4(dropFromMax),
+            };
+            // Balance deducted on fill, not on limit placement
+            md.entries++;
+            logFn('🎾 [Tennis] BREAK DETECTED ' + (m.favoriteSide === 'A' ? m.outcomeA : m.outcomeB) + ' | Limit BUY @ ' + fl4(limitPrice) + ' | $' + betAmount + ' | drop=' + fl4(dropFromMax));
+            if (!st.recentTrades) st.recentTrades = [];
+            st.recentTrades.push({ type: 'ENTRY_LIMIT', side: m.favoriteSide, entryPrice: fl4(limitPrice), name: m.favoriteSide === 'A' ? (m.outcomeA||'A') : (m.outcomeB||'B'), amount: betAmount, reason: 'break', at: new Date().toISOString() });
+            if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
+            saveSportsState(sport);
+          }
+          continue; // skip generic signal for tennis
+        }
+
+        // ── Cricket: Wicket-based entry ──
+        if (sport === 'cricket') {
+          if (md.openPosition) continue;
+          const cid = m.cricketMatchId;
+          if (!cid) continue;
+          const wick = getCricketWicketSignal(cid);
+          if (!wick) continue;
+          // Map batting team to Polymarket outcome
+          const batLow = wick.battingTeam.toLowerCase();
+          const isA = (m.outcomeA || '').toLowerCase().includes(batLow) || (m.title || '').toLowerCase().includes(batLow);
+          const buySide = isA ? 'A' : 'B';
+          const buyToken = isA ? m.tokenA : m.tokenB;
+          const pBuy = getPrice(buyToken);
+          if (!pBuy || pBuy <= 0) continue;
+          const book = priceBook[buyToken];
+          const limitPrice = book && book.ask > 0 ? fl4(book.ask) : fl4(pBuy);
+          if (limitPrice <= 0) continue;
+          const balance = st.balance;
+          let betAmount = fl2(balance * cfg.maxBetPct);
+          if (betAmount < 5) continue;
+          const fRate = await getFeeRate(buyToken);
+          const entryFee = fl2(betAmount * fRate * (1 - limitPrice));
+          const totalCost = fl2(betAmount + entryFee);
+          const shares = fl4(betAmount / limitPrice);
+
+          md.openPosition = {
+            side: buySide, tokenId: buyToken, entryPrice: limitPrice,
+            amount: betAmount, shares: 0, netOut: 0, feeRate: fRate,
+            tpPrice: fl4(limitPrice + CRICKET_TP),
+            stopPrice: fl4(Math.max(0.001, limitPrice - CRICKET_HARD_SL)),
+            entryTime: now, entryType: 'limit',
+            limitPrice: limitPrice, limitPlacedAt: now,
+            limitFilled: false, reason: 'wicket ' + wick.battingTeam + ' ' + wick.runs + '/' + wick.wickets,
+          };
+          // Balance deducted on fill
+          md.entries++;
+          logFn('🏏 [Cricket] WICKET ' + wick.battingTeam + ' ' + wick.runs + '/' + wick.wickets + ' | Limit BUY ' + buySide + ' @ ' + fl4(limitPrice) + ' | $' + betAmount);
+          if (!st.recentTrades) st.recentTrades = [];
+          st.recentTrades.push({ type: 'ENTRY_LIMIT', side: buySide, entryPrice: fl4(limitPrice), name: buySide === 'A' ? (m.outcomeA||'A') : (m.outcomeB||'B'), amount: betAmount, reason: 'wicket', at: new Date().toISOString() });
+          if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
+          saveSportsState(sport);
+          continue;
+        }
+
+        // ── Esports: Fade the unfavorite (buy the favorite) ──
+        if (sport === 'esports') {
+          if (md.openPosition) continue;
+          const pA = getPrice(m.tokenA), pB = getPrice(m.tokenB);
+          if (!pA || !pB || pA <= 0 || pB <= 0) continue;
+          if (!md.priceHistory) md.priceHistory = [];
+          const last = md.priceHistory.length > 0 ? md.priceHistory[md.priceHistory.length - 1] : null;
+          if (!last || now - last.t > 3000) {
+            md.priceHistory.push({ t: now, pA, pB });
+            if (md.priceHistory.length > 500) md.priceHistory.splice(0, 100);
+          }
+          // Flip: buy the favorite (expensive side) not the underdog
+          let signal = null;
+          if (pA >= cfg.threshold && pB <= (1 - cfg.threshold + 0.05)) {
+            signal = { buySide: 'A', entryPrice: pA, tokenId: m.tokenA, reason: 'fav A=' + fl4(pA) + '→buy A' };
+          } else if (pB >= cfg.threshold && pA <= (1 - cfg.threshold + 0.05)) {
+            signal = { buySide: 'B', entryPrice: pB, tokenId: m.tokenB, reason: 'fav B=' + fl4(pB) + '→buy B' };
+          }
+          if (!signal) continue;
+          // Esports uses same generic exit logic (tpSpread from config)
+          const sp = priceBook[signal.tokenId];
+          const spread = sp && sp.ask > 0 && sp.bid > 0 ? (sp.ask - sp.bid) : 0.05;
+          if (spread > 0.15) continue;
+          const balance = st.balance;
+          let betAmount = fl2(balance * cfg.maxBetPct);
+          if (betAmount < 5 || signal.entryPrice < 0.01) continue;
+          const fRate = await getFeeRate(signal.tokenId);
+          const entryFee = fl2(betAmount * fRate * (1 - signal.entryPrice));
+          const totalCost = fl2(betAmount + entryFee);
+          const shares = fl4(betAmount / signal.entryPrice);
+          md.openPosition = {
+            side: signal.buySide, tokenId: signal.tokenId, entryPrice: fl4(signal.entryPrice),
+            amount: betAmount, shares, netOut: totalCost, feeRate: fRate,
+            tpPrice: fl4(signal.entryPrice + cfg.tpSpread),
+            stopPrice: fl4(Math.max(0.01, signal.entryPrice - cfg.stopSpread)),
+            entryTime: now, entryType: 'market', limitFilled: true,
+            reason: signal.reason,
+          };
+          st.balance = fl2(st.balance - totalCost);
+          st.totalFees = fl2(st.totalFees + entryFee);
+          md.entries++;
+          logFn('🎮 [Esports] ' + m.title + ' | BUY ' + signal.buySide + ' @ ' + fl4(signal.entryPrice) + ' | $' + betAmount + ' | ' + signal.reason);
+          if (!st.recentTrades) st.recentTrades = [];
+          st.recentTrades.push({ type: 'ENTRY', side: signal.buySide, entryPrice: fl4(signal.entryPrice), name: signal.buySide === 'A' ? (m.outcomeA||'A') : (m.outcomeB||'B'), amount: betAmount, at: new Date().toISOString() });
+          if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
+          saveSportsState(sport);
+          continue;
+        }
+
+        // ── Football (unchanged original fade logic) ──
         if (md.openPosition) continue;
         if (!m.isLive) {
-          // Skip non-live unless recent price movement
           if (!st[k].priceHistory || st[k].priceHistory.length < 3) continue;
           const latest = st[k].priceHistory[st[k].priceHistory.length - 1];
           if (latest.pA > 0.97 || latest.pB > 0.97) continue;
         }
         const pA = getPrice(m.tokenA), pB = getPrice(m.tokenB);
         if (!pA || !pB || pA <= 0 || pB <= 0) continue;
-        const ph = st[k].priceHistory || [];
-        if (ph.length < 2) {
-          if (!st[k].priceHistory) st[k].priceHistory = [];
-          st[k].priceHistory.push({ t: Date.now(), pA, pB });
-          if (st[k].priceHistory.length > 500) st[k].priceHistory.splice(0, 100);
-          continue;
+        if (!md.priceHistory) md.priceHistory = [];
+        const last = md.priceHistory.length > 0 ? md.priceHistory[md.priceHistory.length - 1] : null;
+        if (!last || now - last.t > 3000) {
+          md.priceHistory.push({ t: now, pA, pB });
+          if (md.priceHistory.length > 500) md.priceHistory.splice(0, 100);
         }
-        if (!st[k].priceHistory) st[k].priceHistory = [];
-        const last = st[k].priceHistory[st[k].priceHistory.length - 1];
-        if (!last || Date.now() - last.t > 3000) {
-          st[k].priceHistory.push({ t: Date.now(), pA, pB });
-          if (st[k].priceHistory.length > 500) st[k].priceHistory.splice(0, 100);
-        }
-
-        // Fade signal
         let signal = null;
-        if (pA >= cfg.threshold && pB <= (1 - cfg.threshold + 0.05)) signal = { buySide: 'B', entryPrice: pB, tokenId: m.tokenB, reason: 'A='+fl4(pA)+'→buy B' };
-        else if (pB >= cfg.threshold && pA <= (1 - cfg.threshold + 0.05)) signal = { buySide: 'A', entryPrice: pA, tokenId: m.tokenA, reason: 'B='+fl4(pB)+'→buy A' };
+        if (pA >= cfg.threshold && pB <= (1 - cfg.threshold + 0.05)) signal = { buySide: 'B', entryPrice: pB, tokenId: m.tokenB, reason: 'A=' + fl4(pA) + '→buy B' };
+        else if (pB >= cfg.threshold && pA <= (1 - cfg.threshold + 0.05)) signal = { buySide: 'A', entryPrice: pA, tokenId: m.tokenA, reason: 'B=' + fl4(pB) + '→buy A' };
         if (!signal) continue;
-
-        // Check spread
         const sp = priceBook[signal.tokenId];
         const spread = sp && sp.ask > 0 && sp.bid > 0 ? (sp.ask - sp.bid) : 0.05;
         if (spread > 0.15) continue;
-
         const balance = st.balance;
         let betAmount = fl2(balance * cfg.maxBetPct);
-        if (betAmount < 5) continue;
-        // Skip extremely cheap entries (< 1 cent)
-        if (signal.entryPrice < 0.01) continue;
-
-        // Fee: amount × feeRate × (1-p)
+        if (betAmount < 5 || signal.entryPrice < 0.01) continue;
         const fRate = await getFeeRate(signal.tokenId);
         const entryFee = fl2(betAmount * fRate * (1 - signal.entryPrice));
         const totalCost = fl2(betAmount + entryFee);
         const shares = fl4(betAmount / signal.entryPrice);
-
         md.openPosition = {
           side: signal.buySide, tokenId: signal.tokenId, entryPrice: fl4(signal.entryPrice),
           amount: betAmount, shares, netOut: totalCost, feeRate: fRate,
           tpPrice: fl4(signal.entryPrice + cfg.tpSpread),
-          stopPrice: fl4(Math.max(0.01, signal.entryPrice - cfg.stopSpread)), entryTime: Date.now(),
+          stopPrice: fl4(Math.max(0.01, signal.entryPrice - cfg.stopSpread)),
+          entryTime: now, entryType: 'market', limitFilled: true,
+          reason: signal.reason,
         };
         st.balance = fl2(st.balance - totalCost);
         st.totalFees = fl2(st.totalFees + entryFee);
         md.entries++;
-        logFn(`📈 [${cfg.label}] ${m.title} | BUY ${signal.buySide} @ ${fl4(signal.entryPrice)} | $${betAmount} | ${signal.reason}`);
+        logFn('⚽ [Football] ' + m.title + ' | BUY ' + signal.buySide + ' @ ' + fl4(signal.entryPrice) + ' | $' + betAmount + ' | ' + signal.reason);
         if (!st.recentTrades) st.recentTrades = [];
-        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide.toUpperCase(), entryPrice: fl4(signal.entryPrice), name: signal.buySide==="A"?(m.outcomeA||"A"):(m.outcomeB||"B"), amount: betAmount, at: new Date().toISOString() });
+        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide, entryPrice: fl4(signal.entryPrice), name: signal.buySide === 'A' ? (m.outcomeA||'A') : (m.outcomeB||'B'), amount: betAmount, at: new Date().toISOString() });
         if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
         saveSportsState(sport);
-      } catch (e) { logFn(`⚠️ Sports entry [${sport}]: ${e.message}`); }
+      } catch (e) { logFn('⚠️ Sports entry [' + sport + ']: ' + e.message); }
     }
   }
 }
@@ -284,16 +531,89 @@ function manageSportsPositions() {
         const st = sportsState[sport];
         if (!st || !st[k] || !st[k].openPosition) continue;
         const pos = st[k].openPosition;
+        const md = st[k];
+        const now = Date.now();
+
+        // ── Handle limit order fill simulation ──
+        if (!pos.limitFilled) {
+          const cp = getPrice(pos.tokenId);
+          if (!cp || cp <= 0) continue;
+          const timeElapsed = (now - pos.limitPlacedAt) / 1000;
+
+          // Check if limit filled: price moved to/through our limit price
+          const limitFilled = cp <= pos.limitPrice; // buying at ask, filled if price <= our limit
+
+          if (limitFilled) {
+            pos.limitFilled = true;
+            pos.entryPrice = fl4(cp); // use actual fill price
+            pos.entryTime = now;
+            pos.shares = fl4(pos.amount / cp);
+            const fillCost = fl2(pos.amount + (pos.amount * pos.feeRate * (1 - cp)));
+            pos.netOut = fillCost;
+            st.balance = fl2(st.balance - fillCost);
+            st.totalFees = fl2(st.totalFees + (pos.amount * pos.feeRate * (1 - cp)));
+            logFn('✅ [' + cfg.label + '] ' + m.title + ' | Limit FILLED @ ' + fl4(cp));
+            st[k].openPosition = pos;
+            saveSportsState(sport);
+            // Update recentTrades entry
+            if (st.recentTrades && st.recentTrades.length > 0) {
+              const last = st.recentTrades[st.recentTrades.length - 1];
+              if (last && last.type === 'ENTRY_LIMIT') last.type = 'ENTRY';
+            }
+          } else if (timeElapsed >= TENNIS_ENTRY_WINDOW || timeElapsed >= CRICKET_ENTRY_WINDOW) {
+            // 30s timeout → market fill at current price
+            pos.limitFilled = true;
+            pos.entryPrice = fl4(cp);
+            pos.entryTime = now;
+            pos.shares = fl4(pos.amount / cp);
+            const fillCost = fl2(pos.amount + (pos.amount * pos.feeRate * (1 - cp)));
+            pos.netOut = fillCost;
+            pos.entryType = 'market';
+            st.balance = fl2(st.balance - fillCost);
+            st.totalFees = fl2(st.totalFees + (pos.amount * pos.feeRate * (1 - cp)));
+            logFn('⚡ [' + cfg.label + '] ' + m.title + ' | Limit TIMEOUT → Market FILLED @ ' + fl4(cp));
+            st[k].openPosition = pos;
+            saveSportsState(sport);
+            if (st.recentTrades && st.recentTrades.length > 0) {
+              const last = st.recentTrades[st.recentTrades.length - 1];
+              if (last && last.type === 'ENTRY_LIMIT') { last.type = 'ENTRY_MARKET'; last.entryPrice = fl4(cp); }
+            }
+          }
+          continue; // still waiting for fill
+        }
+
+        // ── Position filled, check exit ──
         const cp = getPrice(pos.tokenId);
         if (!cp || cp <= 0) continue;
         const gross = fl4(pos.shares * cp);
         const rawPnl = fl4(gross - pos.netOut);
-        const isResolved = false;
         let exitType = null;
-        if (cp >= pos.tpPrice) exitType = 'TP';
-        else if (cp <= pos.stopPrice) exitType = 'STOP';
-        else if (Date.now() - pos.entryTime > 7200000) exitType = 'TIME';
-        else continue;
+
+        // Sport-specific stop loss
+        let hardSl = cfg.stopSpread; // default from config
+        if (sport === 'tennis') hardSl = TENNIS_HARD_SL;
+        else if (sport === 'cricket') hardSl = CRICKET_HARD_SL;
+
+        // For tennis/cricket: TP is price improvement from entry
+        if (sport === 'tennis') {
+          const priceImprovement = cp - pos.entryPrice;
+          if (priceImprovement >= TENNIS_BREAK_RECOVERY) exitType = 'TP';
+          else if (cp <= pos.entryPrice - hardSl) exitType = 'STOP';
+          else if (now - pos.entryTime > 7200000) exitType = 'TIME';
+        } else if (sport === 'cricket') {
+          const priceImprovement = cp - pos.entryPrice;
+          if (priceImprovement >= CRICKET_TP) exitType = 'TP';
+          else if (cp <= pos.entryPrice - hardSl) exitType = 'STOP';
+          else if (now - pos.entryTime > 7200000) exitType = 'TIME';
+        } else {
+          // Esports / Football: standard TP/SL
+          if (cp >= pos.tpPrice) exitType = 'TP';
+          else if (cp <= pos.stopPrice) exitType = 'STOP';
+          else if (now - pos.entryTime > 7200000) exitType = 'TIME';
+        }
+
+        if (!exitType) continue;
+
         const xFee = exitType === 'TP' ? 0 : (pos.feeRate || 0.03);
         const exitFee = exitType === 'TP' ? 0 : fl4(pos.shares * xFee * cp * (1 - cp));
         const netProceeds = fl4(gross - exitFee);
@@ -303,16 +623,17 @@ function manageSportsPositions() {
         st.totalPnl = fl4(st.totalPnl + actualPnl);
         st.totalFees = fl2(st.totalFees + exitFee);
         if (won) { st.wins++; st[k].wins++; } else { st.losses++; st[k].losses++; }
-        logFn(`${won?'🟢':'🔴'} [${cfg.label}] ${m.title} | ${exitType} ${pos.side} @ ${fl4(cp)} | P&L ${actualPnl>=0?'+':''}$${actualPnl.toFixed(2)}`);
+        logFn((won ? '🟢' : '🔴') + ' [' + cfg.label + '] ' + m.title + ' | ' + exitType + ' ' + pos.side + ' @ ' + fl4(cp) + ' | P&L ' + (actualPnl >= 0 ? '+' : '') + '$' + actualPnl.toFixed(2) + ' | ' + (pos.reason || ''));
         if (!st.recentTrades) st.recentTrades = [];
-        st.recentTrades.push({ type: exitType, side: pos.side.toUpperCase(), entryPrice: fl4(pos.entryPrice), exitPrice: fl4(cp), name: pos.side==="A"?(m.outcomeA||"A"):(m.outcomeB||"B"), amount: pos.amount, pnl: fl4(actualPnl), won, at: new Date().toISOString() });
+        st.recentTrades.push({ type: exitType, side: pos.side, entryPrice: fl4(pos.entryPrice), exitPrice: fl4(cp), name: pos.side === 'A' ? (m.outcomeA||'A') : (m.outcomeB||'B'), amount: pos.amount, pnl: fl4(actualPnl), won, at: new Date().toISOString() });
         if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
         st[k].openPosition = null;
         saveSportsState(sport);
-      } catch (e) { logFn(`⚠️ Sports mgmt [${sport}]: ${e.message}`); }
+      } catch (e) { logFn('⚠️ Sports mgmt [' + sport + ']: ' + e.message); }
     }
   }
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // FIFA BOT — World Cup Cross-Market
@@ -954,8 +1275,13 @@ function buildSnapshot() {
       const md = (st[k] || {});
       const pos = md.openPosition;
       const livePnl = pos ? fl4(pos.shares * getPrice(pos.tokenId) - pos.netOut) : null;
+      const csc = sport === 'cricket' && m.cricketMatchId ? cricketScoreCache[m.cricketMatchId] : null;
       matches.push({
         title: m.title, score: m.score || '', isLive: m.isLive,
+        sportScore: csc ? (csc.runs + '/' + csc.wickets + ' (' + csc.overs + ' ov)') : '',
+        cricketScore: csc ? csc : null,
+        favoriteSide: m.favoriteSide || null,
+        favoriteName: m.favoriteSide ? (m.favoriteSide === 'A' ? m.outcomeA : m.outcomeB) : null,
         prices: [fl4(getPrice(m.tokenA)), fl4(getPrice(m.tokenB))],
         mlLiquidity: m.mlLiquidity,
         openPosition: pos ? { side: pos.side, entryPrice: pos.entryPrice, amount: pos.amount, tpPrice: pos.tpPrice, stopPrice: pos.stopPrice, currentPrice: fl4(getPrice(pos.tokenId)) } : null,
@@ -1022,6 +1348,10 @@ async function tick() {
     // Poll prices
     await pollSportsPrices();
     await refreshFifa();
+    // Cricket score feed every 6 ticks
+    if (tickCount % 6 === 0) {
+      await pollCricketScores();
+    }
 
     // Trade
     checkSportsEntries().catch(()=>{});

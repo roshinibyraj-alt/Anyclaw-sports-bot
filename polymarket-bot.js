@@ -66,7 +66,6 @@ const SPORTS_CFG = {
   tennis:   { label: 'Tennis',   capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Tennis',   matchTags: ['tennis','atp','wta','challenger','libema','slam','open'],                  seedPatterns: ['tennis','atp','wta','slam','open','challenger'] },
   cricket:  { label: 'Cricket',  capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Cricket',  matchTags: ['cricket','t20','odi','bbl','ipl','test','icc','women','world cup','crint'], seedPatterns: ['icc','t20','world cup','crint','cricket'] },
   football: { label: 'Football', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Soccer',   matchTags: ['soccer','football','world cup','fifa','uefa','premier','champions'],         seedPatterns: ['soccer','football','fifa','uefa','champions','world cup'] },
-  mlb: { label: 'MLB', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, maxConcurrent: 2, gammaTag: 'MLB', matchTags: ['mlb','baseball'], seedPatterns: ['mlb','baseball'] }
 };
 
 const sportsState = {};
@@ -266,7 +265,7 @@ async function checkSportsEntries() {
         md.entries++;
         logFn(`📈 [${cfg.label}] ${m.title} | BUY ${signal.buySide} @ ${fl4(signal.entryPrice)} | $${betAmount} | ${signal.reason}`);
         if (!st.recentTrades) st.recentTrades = [];
-        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide.toUpperCase(), entryPrice: fl4(signal.entryPrice), name: signal.buySide==="A"?(m.outcomeA||m.outcomeA||"A"):(m.outcomeB||m.outcomeB||"B"), amount: betAmount, at: new Date().toISOString() });
+        st.recentTrades.push({ type: 'ENTRY', side: signal.buySide.toUpperCase(), entryPrice: fl4(signal.entryPrice), name: signal.buySide==="A"?(m.outcomeA||"A"):(m.outcomeB||"B"), amount: betAmount, at: new Date().toISOString() });
         if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
         saveSportsState(sport);
       } catch (e) { logFn(`⚠️ Sports entry [${sport}]: ${e.message}`); }
@@ -303,7 +302,7 @@ function manageSportsPositions() {
         if (won) { st.wins++; st[k].wins++; } else { st.losses++; st[k].losses++; }
         logFn(`${won?'🟢':'🔴'} [${cfg.label}] ${m.title} | ${exitType} ${pos.side} @ ${fl4(cp)} | P&L ${actualPnl>=0?'+':''}$${actualPnl.toFixed(2)}`);
         if (!st.recentTrades) st.recentTrades = [];
-        st.recentTrades.push({ type: exitType, side: pos.side.toUpperCase(), entryPrice: fl4(pos.entryPrice), exitPrice: fl4(cp), name: pos.side==="A"?(pos.outcomeA||m.outcomeA||"A"):(pos.outcomeB||m.outcomeB||"B"), amount: pos.amount, pnl: fl4(actualPnl), won, at: new Date().toISOString() });
+        st.recentTrades.push({ type: exitType, side: pos.side.toUpperCase(), entryPrice: fl4(pos.entryPrice), exitPrice: fl4(cp), name: pos.side==="A"?(m.outcomeA||"A"):(m.outcomeB||"B"), amount: pos.amount, pnl: fl4(actualPnl), won, at: new Date().toISOString() });
         if (st.recentTrades.length > 30) st.recentTrades = st.recentTrades.slice(-30);
         st[k].openPosition = null;
         saveSportsState(sport);
@@ -447,6 +446,18 @@ function fifaSignal(cfg, s) {
   for (const sub of cfg.subMarkets) {
     const now = gp(sub.id,'A'), then = first[sub.id+'_A']||0;
     if (then>0 && now>0 && Math.abs(now-then)>cfg.spikeThreshold && now>0.65) {
+  // ── Moneyline fade: if any market has expensive side, buy the cheap side
+  for (const sub of cfg.subMarkets) {
+    const pA = gp(sub.id,'A');
+    const pB = gp(sub.id,'B');
+    if (pA > 0.60 && pB > 0.02 && pB < 0.40) {
+      return { side:'B', token:{token_id:sub.tokenB}, marketId:sub.id, entryPrice:pB, reason:'fade '+sub.id+'='+fl4(pA)+' buy B @ '+fl4(pB) };
+    }
+    if (pB > 0.60 && pA > 0.02 && pA < 0.40) {
+      return { side:'A', token:{token_id:sub.tokenA}, marketId:sub.id, entryPrice:pA, reason:'fade '+sub.id+' B='+fl4(pB)+' buy A @ '+fl4(pA) };
+    }
+  }
+  return null;
       const cp = gp(sub.id,'B');
       if (cp > 0.05 && cp < 0.40) return { side:'B', token:{token_id:sub.tokenB}, marketId:sub.id, entryPrice:cp, reason:'spike '+sub.id+'='+fl4(now)+' buy B' };
     }

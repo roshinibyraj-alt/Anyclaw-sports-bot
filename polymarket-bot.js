@@ -1248,6 +1248,36 @@ async function initClob() {
   } catch (e) { logFn(`⚠️ CLOB: ${e.message}`); return null; }
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// CLEANUP — remove resolved/ended matches
+// ═══════════════════════════════════════════════════════════════════════
+function cleanupResolvedMatches() {
+  for (const [sport, cfg] of Object.entries(SPORTS_CFG)) {
+    const st = sportsState[sport];
+    if (!st) continue;
+    const matches = sportsDiscovery[sport] || [];
+    const toRemove = [];
+    for (const m of matches) {
+      const pA = getPrice(m.tokenA);
+      const pB = getPrice(m.tokenB);
+      const resolved = (pA >= 0.98 || pB >= 0.98 || (pA <= 0.02 && pB <= 0.02));
+      const tooOld = (Date.now() - m.discoveredAt) > 10800000;
+      if (resolved || tooOld) {
+        const k = matchKey(m.matchId);
+        if (resolved) logFn(`🧹 [${cfg.label}] Resolved: ${m.title}`);
+        if (st[k]) { st[k].openPosition = null; delete st[k]; }
+        toRemove.push(m);
+      }
+    }
+    for (const rm of toRemove) {
+      const idx = matches.indexOf(rm);
+      if (idx >= 0) matches.splice(idx, 1);
+    }
+    if (toRemove.length > 0) saveSportsState(sport);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // SNAPSHOT
 // ═══════════════════════════════════════════════════════════════════════
@@ -1262,7 +1292,7 @@ function buildSnapshot() {
     for (const m of (sportsDiscovery[sk] || [])) {
       const mk = matchKey(m.matchId);
       const md = (stt[mk] || {});
-      if (md.openPosition) fl += fl4(md.openPosition.shares * getPrice(md.openPosition.tokenId) - md.openPosition.netOut) || 0;
+      if (md.openPosition) fl += fl4(md.openPosition.shares * getPrice(md.openPosition.tokenId)) || 0;
     }
     totalFloating[sk] = fl;
   }
@@ -1313,7 +1343,7 @@ function buildSnapshot() {
     snap.fifaMatches.push({
       matchId: cfg.matchId, label: cfg.label,
       balance: fl2(fifaCapital),
-      floatingBalance: fl2(fifaCapital + (livePnl||0)),
+      floatingBalance: fl2(fifaCapital + (pos ? fl4(pos.shares * currentPrice) : 0)),
       totalPnl: fl4(s.totalPnl||0), totalFees: fl4(s.totalFees||0),
       wins: s.wins||0, losses: s.losses||0, winRate: tt>0?fl4(s.wins/tt):0,
       openPosition: pos?{side:pos.side, entryPrice:fl4(pos.entryPrice), amount:fl2(pos.amount), tpPrice:pos.tpPrice, stopPrice:pos.stopPrice, currentPrice, livePnl}:null,
@@ -1351,6 +1381,10 @@ async function tick() {
     // Cricket score feed every 6 ticks
     if (tickCount % 6 === 0) {
       await pollCricketScores();
+    }
+    // Cleanup resolved matches every 30 ticks
+    if (tickCount > 0 && tickCount % 30 === 0) {
+      cleanupResolvedMatches();
     }
 
     // Trade

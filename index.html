@@ -123,14 +123,14 @@ function r(d){
         '<div class="cp" id="cp-'+k+'"></div>'+
         '<div style="display:flex;align-items:center;margin:4px 0">'+
           '<span class="stitle" style="flex:1;border:none;padding:0;margin:0">Markets</span>'+
-          '<button class="tog" id="tgm-'+k+'" onclick="toggleCollapse(\''+k+'\',\'m\')">-</button></div>'+
+          '<button class="tog" id="tgm-'+k+'" onclick="toggleCollapse(\''+k+'\',\'m\')">+</button></div>'+
         '<div class="coll" id="cmm-'+k+'"><div id="mm-'+k+'"></div></div>'+
         '<div style="display:flex;align-items:center;margin:4px 0">'+
           '<span class="stitle" style="flex:1;border:none;padding:0;margin:0">Trades</span>'+
-          '<button class="tog" id="tgt-'+k+'" onclick="toggleCollapse(\''+k+'\',\'t\')">-</button></div>'+
+          '<button class="tog" id="tgt-'+k+'" onclick="toggleCollapse(\''+k+'\',\'t\')">+</button></div>'+
         '<div class="coll" id="cth-'+k+'"><div id="th-'+k+'"><div class="empty">No trades</div></div></div>';
       if(!_cache._coll) _cache._coll={};
-      if(_cache._coll[k]==null) _cache._coll[k]={m:false,t:false};
+      if(_cache._coll[k]==null) _cache._coll[k]={m:true,t:true};
       sg.appendChild(card);
     }
     var b=sc.floatingBalance!=null?sc.floatingBalance:sc.balance;
@@ -157,7 +157,7 @@ function r(d){
         (m.favoriteName?'<div style="font-size:9px;color:var(--muted);margin:1px 0">⭐ Fav: '+m.favoriteName+'</div>':'');
       if(m.openPosition){
         var pc=(m.livePnl||0)>=0?'pos':'neg';
-        mh+='<div class="pos-box"><span>📈 '+(m.openPosition.side||'')+' @ '+(m.openPosition.entryPrice||0).toFixed(3)+'</span><span class="pos-pnl '+pc+'">'+((m.livePnl||0)>=0?'+':'')+(m.livePnl||0).toFixed(2)+'</span></div>';
+        mh+='<div class="pos-box"><span>📈 '+(m.openPosition.side||'')+' @ '+(m.openPosition.entryPrice||0).toFixed(3)+' | TP:'+(m.openPosition.tpPrice||0).toFixed(3)+' SL:'+(m.openPosition.stopPrice||0).toFixed(3)+'</span><span class="pos-pnl '+pc+'">'+((m.livePnl||0)>=0?'+':'')+(m.livePnl||0).toFixed(2)+'</span></div>';
       }
       mh+='</div>';
     });

@@ -308,6 +308,8 @@ function manageSportsPositions() {
 // ═══════════════════════════════════════════════════════════════════════
 
 let fifaMatches = [];
+let fifaCapital = 2000;
+let fifaStartTimes = {};
 let lastFifaDiscovery = 0;
 
 function freshFifaState(cfg) {
@@ -353,6 +355,7 @@ async function discoverFifa() {
       if (subs.length < 3) continue;
       const cfg = {
         key: 'fifa-'+matchId, label: '⚽ '+(e.title||'?'), matchId, slug: e.slug||'', eventId: e.id||'',
+        gameStartTime: (function(){ try { for (const mm of (e.markets||[])) { if (mm.gameStartTime) return mm.gameStartTime; if (mm.endDate) return new Date(new Date(mm.endDate).getTime()-7200000).toISOString(); } } catch(_){} return null; })(),
         subMarkets: subs, baseBetPct: 0.10, tpPrice: 0.45, stopPrice: 0.03, spikeLookbackMs: 15000, spikeThreshold: 0.012, arbThreshold: 0.030,
         stateFile: path.join(__dirname, 'state_fifa_'+matchId+'.json'),
       };
@@ -449,7 +452,7 @@ async function fifaEntry() {
     if (!s || s.openPosition) continue;
     const signal = fifaSignal(cfg, s);
     if (!signal) continue;
-    const betAmount = fl2(s.balance * cfg.baseBetPct);
+    const betAmount = fl2(fifaCapital * cfg.baseBetPct);
     if (betAmount < 5) continue;
     const fRate = await getFeeRate(signal.token?.token_id);
     const entryFee = fl4(betAmount * fRate * (1 - signal.entryPrice));
@@ -460,7 +463,7 @@ async function fifaEntry() {
       amount: betAmount, shares, netOut: totalCost, feeRate: fRate,
       marketId: signal.marketId, tpPrice: cfg.tpPrice, stopPrice: cfg.stopPrice, entryTime: Date.now(),
     };
-    s.balance = subF(s.balance, totalCost);
+    fifaCapital = subF(fifaCapital, totalCost);
     s.totalFees = addF(s.totalFees, entryFee);
     s.lastEntryReason = signal.reason;
     logFn(`📈 [${cfg.label}] ENTRY ${signal.side} on ${signal.marketId} @ ${fl4(signal.entryPrice)} | $${betAmount} | ${signal.reason}`);
@@ -489,7 +492,7 @@ function fifaManage() {
     const netProceeds = fl4(gross - exitFee);
     const actualPnl = fl4(rawPnl - exitFee);
     const won = actualPnl >= 0;
-    s.balance = addF(s.balance, netProceeds);
+    fifaCapital = addF(fifaCapital, netProceeds);
     s.totalPnl = fl4(s.totalPnl + actualPnl);
     s.totalFees = addF(s.totalFees, exitFee);
     if (won) s.wins++; else s.losses++;
@@ -525,6 +528,20 @@ async function initClob() {
 // ═══════════════════════════════════════════════════════════════════════
 function buildSnapshot() {
   const snap = { sports: {}, fifaMatches: [] };
+  
+  // ── Calculate floating P&L for all sports first
+  var totalFloating = {};
+  for (const [sk, sc] of Object.entries(SPORTS_CFG)) {
+    const stt = sportsState[sk] || {};
+    var fl = 0;
+    for (const m of (sportsDiscovery[sk] || [])) {
+      const mk = matchKey(m.matchId);
+      const md = (stt[mk] || {});
+      if (md.openPosition) fl += fl4(md.openPosition.shares * getPrice(md.openPosition.tokenId) - md.openPosition.netOut) || 0;
+    }
+    totalFloating[sk] = fl;
+  }
+  
   for (const [sport, cfg] of Object.entries(SPORTS_CFG)) {
     const st = sportsState[sport] || { balance: cfg.capital, totalPnl: 0, totalFees: 0, wins: 0, losses: 0 };
     const matches = [];
@@ -543,11 +560,16 @@ function buildSnapshot() {
     }
     const tt = (st.wins || 0) + (st.losses || 0);
     snap.sports[sport] = {
-      label: cfg.label, balance: fl2(st.balance || cfg.capital), totalPnl: fl4(st.totalPnl || 0), totalFees: fl4(st.totalFees || 0),
-      wins: st.wins || 0, losses: st.losses || 0, winRate: tt > 0 ? fl4(st.wins/tt) : 0,
+      label: cfg.label,
+      balance: fl2(st.balance || cfg.capital),
+      floatingBalance: fl2((st.balance||cfg.capital) + (totalFloating[sport]||0)),
+      totalPnl: fl4(st.totalPnl || 0), totalFees: fl4(st.totalFees || 0),
+      wins: st.wins || 0, losses: st.losses || 0,
+      winRate: tt > 0 ? fl4(st.wins/tt) : 0,
       recentTrades: (st.recentTrades || []).slice(-20), matches,
     };
   }
+  
   for (const match of fifaMatches) {
     const { cfg } = match;
     const s = states[cfg.key];
@@ -556,11 +578,17 @@ function buildSnapshot() {
     let currentPrice = null, livePnl = null;
     if (pos) { currentPrice = fl4(getPrice(pos.token?pos.token.token_id||pos.token:0)); livePnl = fl4(pos.shares*currentPrice-pos.netOut); }
     const tt = (s.wins||0)+(s.losses||0);
+    var countdown = null;
+    if (cfg.gameStartTime) countdown = Math.max(0, Math.floor((new Date(cfg.gameStartTime).getTime() - Date.now()) / 1000));
     snap.fifaMatches.push({
-      matchId: cfg.matchId, label: cfg.label, balance: fl2(s.balance||2000), totalPnl: fl4(s.totalPnl||0), totalFees: fl4(s.totalFees||0),
+      matchId: cfg.matchId, label: cfg.label,
+      balance: fl2(fifaCapital),
+      floatingBalance: fl2(fifaCapital + (livePnl||0)),
+      totalPnl: fl4(s.totalPnl||0), totalFees: fl4(s.totalFees||0),
       wins: s.wins||0, losses: s.losses||0, winRate: tt>0?fl4(s.wins/tt):0,
-      openPosition: pos?{side:pos.side, entryPrice:fl4(pos.entryPrice), amount:fl2(pos.amount), tpPrice:pos.tpPrice, stopPrice:pos.stopPrice}:null,
-      currentPrice, livePnl, recentTrades: (s.trades||[]).slice(-20), fifaMarkets: s.fifaMarkets, lastEntryReason: s.lastEntryReason,
+      openPosition: pos?{side:pos.side, entryPrice:fl4(pos.entryPrice), amount:fl2(pos.amount), tpPrice:pos.tpPrice, stopPrice:pos.stopPrice, currentPrice, livePnl}:null,
+      livePnl, recentTrades: (s.trades||[]).slice(-20), fifaMarkets: s.fifaMarkets, lastEntryReason: s.lastEntryReason,
+      gameStartTime: cfg.gameStartTime, countdown,
     });
   }
   return snap;

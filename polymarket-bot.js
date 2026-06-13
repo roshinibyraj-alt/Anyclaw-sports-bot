@@ -541,7 +541,7 @@ function fifaManage() {
 //      within the first 60% of the window, fade it (buy the cheap side).
 //
 //   EXIT: TP=0.85, SL=0.10, Time exit at 80% of window
-//   Trailing stop to breakeven if price crosses 0.50
+//   Trailing stop locks in profit when price moves 30% above entry
 //
 //   MARTINGALE: Base=2%, double on loss, max 4 doubles (32% cap),
 //   reset on win. Separate trackers for 5m and 15m.
@@ -551,19 +551,19 @@ const BTC_CONFIGS = {
     key: 'btc_5m', label: 'BTC 5M', windowSize: 300,
     marketSlug: 'btc-updown-5m',
     entryWindowStart: 15, entryWindowEnd: 90,
-    baseBetPct: 0.02, maxDoubles: 4,
-    tpPrice: 0.85, stopPrice: 0.10,
+    baseBetPct: 0.01, maxDoubles: 2,
+    tpPrice: 0.85, stopPrice: 0.15,
     timeExitBeforeEnd: 30,
-    streakFadeCount: 3,
-    overextendThreshold: 0.72, overextendMaxPct: 0.60,
-    capital: 2000,
+    streakFadeCount: 4,
+    overextendThreshold: 0.85, overextendMaxPct: 0.50,
+    capital: 2000, takerFeeRate: 0.005,
   },
   btc_15m: {
     key: 'btc_15m', label: 'BTC 15M', windowSize: 900,
     marketSlug: 'btc-updown-15m',
     entryWindowStart: 30, entryWindowEnd: 240,
-    baseBetPct: 0.02, maxDoubles: 4,
-    tpPrice: 0.85, stopPrice: 0.10,
+    baseBetPct: 0.01, maxDoubles: 2,
+    tpPrice: 0.85, stopPrice: 0.15,
     timeExitBeforeEnd: 60,
     streakFadeCount: 3,
     overextendThreshold: 0.72, overextendMaxPct: 0.60,
@@ -612,7 +612,7 @@ function saveBtcState(cfg) {
 
 function onBtcWin(s) { s.betAmount = fl2(Math.max(5, s.balance * 0.02)); s.betLevel = 0; }
 function onBtcLoss(s) {
-  if (s.betLevel >= 4) { s.betAmount = fl2(Math.max(5, s.balance * 0.02)); s.betLevel = 0; return; }
+  if (s.betLevel >= 2) { s.betAmount = fl2(Math.max(5, s.balance * 0.02)); s.betLevel = 0; return; }
   s.betLevel++; s.betAmount = fl2(s.betAmount * 2);
   if (s.betAmount > s.maxBetReached) s.maxBetReached = s.betAmount;
 }
@@ -757,7 +757,7 @@ async function btcEntry(cfg) {
   const entryPrice = signal.entryPrice;
   const shares = fl4(betAmount / Math.max(entryPrice, 0.01));
   const tokenId = signal.side === 'up' ? w.upToken : w.dnToken;
-  const fRate = await getFeeRate(tokenId);
+  const fRate = cfg.takerFeeRate || 0.005;
   const entryFee = fl2(betAmount * fRate * (1 - entryPrice));
   const totalCost = fl2(betAmount + entryFee);
   s.balance = subF(s.balance, totalCost);
@@ -790,11 +790,11 @@ function btcManage(cfg) {
   if (cp >= pos.tpPrice) exitType = 'TP';
   else if (cp <= pos.stopPrice) exitType = 'STOP';
   else if (remaining <= cfg.timeExitBeforeEnd) exitType = 'TIME';
-  // Trailing stop to breakeven when price crosses 0.50
-  if (!exitType && cp >= 0.50 && pos.entryPrice < 0.50 && !pos._trailSet) {
+  // Trailing stop: move stop to entry+20% when price reaches TP*0.6
+  if (!exitType && cp >= pos.entryPrice * 1.3 && !pos._trailSet) {
     pos._trailSet = true;
-    pos.stopPrice = Math.min(pos.entryPrice, 0.48); // breakeven or better
-    logFn('🔒 ['+cfg.label+'] Trail @ '+fl4(cp)+' — stop to '+fl4(pos.stopPrice));
+    pos.stopPrice = fl4(pos.entryPrice * 1.15); // lock in 15% gain
+    logFn('🔒 ['+cfg.label+'] Trail activated @ '+fl4(cp)+' — stop raised to '+fl4(pos.stopPrice));
     s.openPosition = pos;
     saveBtcState(cfg);
     return;

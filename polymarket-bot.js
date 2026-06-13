@@ -1261,7 +1261,10 @@ function cleanupResolvedMatches() {
     for (const m of matches) {
       const pA = getPrice(m.tokenA);
       const pB = getPrice(m.tokenB);
-      const resolved = (pA >= 0.98 || pB >= 0.98 || (pA <= 0.02 && pB <= 0.02));
+      // Only consider resolved when prices are actually loaded (pA > 0 || pB > 0)
+      // and one side is at resolution boundary
+      const pricesLoaded = (pA > 0 || pB > 0);
+      const resolved = pricesLoaded && (pA >= 0.98 || pB >= 0.98 || (pA <= 0.02 && pB <= 0.02));
       const tooOld = (Date.now() - m.discoveredAt) > 10800000;
       if (resolved || tooOld) {
         const k = matchKey(m.matchId);

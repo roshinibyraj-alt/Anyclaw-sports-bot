@@ -63,9 +63,10 @@ async function getJsonArray(url) {
 // ═══════════════════════════════════════════════════════════════════════
 
 const SPORTS_CFG = {
-  tennis:   { label: 'Tennis',   capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Tennis',   matchTags: ['tennis','atp','wta','challenger','libema','slam','open'],                  seedPatterns: ['tennis','atp','wta','slam','open','challenger'] },
-  cricket:  { label: 'Cricket',  capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Cricket',  matchTags: ['cricket','t20','odi','bbl','ipl','test','icc','women','world cup','crint'], seedPatterns: ['icc','t20','world cup','crint','cricket'] },
-  football: { label: 'Football', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Soccer',   matchTags: ['soccer','football','world cup','fifa','uefa','premier','champions'],         seedPatterns: ['soccer','football','fifa','uefa','champions','world cup'] },
+  tennis:   { label: 'Tennis',   capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Tennis',   matchTags: ['tennis','atp','wta','challenger','libema','slam','open'],                     seedPatterns: ['tennis','atp','wta','slam','open','challenger'] },
+  cricket:  { label: 'Cricket',  capital: 2000, threshold: 0.55, tpSpread: 0.10, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Cricket',  matchTags: ['cricket','t20','odi','bbl','ipl','test','icc','women','world cup','crint'],   seedPatterns: ['icc','t20','world cup','crint','cricket'] },
+  football: { label: 'Football', capital: 2000, threshold: 0.60, tpSpread: 0.08, stopSpread: 0.05, maxBetPct: 0.05, gammaTag: 'Soccer',   matchTags: ['soccer','football','world cup','fifa','uefa','premier','champions'],           seedPatterns: ['soccer','football','fifa','uefa','champions','world cup'] },
+  esports:  { label: 'Esports',  capital: 2000, threshold: 0.55, tpSpread: 0.12, stopSpread: 0.06, maxBetPct: 0.05, gammaTag: 'Esports', matchTags: ['esports','cs2','counter strike','dota','league of legends','lol','valorant','overwatch','rocket league','starcraft','fighting'], seedPatterns: ['esports','cs2','counter strike','dota','lol','valorant'] },
 };
 
 const sportsState = {};
@@ -127,7 +128,7 @@ async function discoverSports() {
       for (const e of events) {
         if (!e || e.closed || seen.has(e.id)) continue;
         const tags = (e.tags || []).map(t => (t.label || '').toLowerCase());
-        if (tags.some(t => t.includes('esports') || t.includes('league of legends') || t.includes('dota'))) continue;
+        if (sport !== 'esports' && tags.some(t => t.includes('esports') || t.includes('league of legends') || t.includes('dota'))) continue;
         // Must match this sport's tags — prevents cross-sport pollution
         const matchesSport = cfg.matchTags.some(mt => tags.some(t => t.includes(mt)));
         if (!matchesSport) continue;
@@ -145,7 +146,7 @@ async function discoverSports() {
         for (const e of all) {
           if (!e || seen.has(e.id)) continue;
           const tags = (e.tags || []).map(t => (t.label || '').toLowerCase());
-          if (tags.some(t => t.includes('esports') || t.includes('dota') || t.includes('league of legends'))) continue;
+          if (sport !== 'esports' && tags.some(t => t.includes('esports') || t.includes('dota') || t.includes('league of legends'))) continue;
           const ttl = (e.title || '').toLowerCase();
           const matches = cfg.matchTags.some(mt => tags.some(t => t.includes(mt))) || cfg.matchTags.some(mt => ttl.includes(mt));
           if (!matches) continue;
@@ -247,6 +248,8 @@ async function checkSportsEntries() {
         const balance = st.balance;
         let betAmount = fl2(balance * cfg.maxBetPct);
         if (betAmount < 5) continue;
+        // Skip extremely cheap entries (< 1 cent)
+        if (signal.entryPrice < 0.01) continue;
 
         // Fee: amount × feeRate × (1-p)
         const fRate = await getFeeRate(signal.tokenId);
@@ -258,7 +261,7 @@ async function checkSportsEntries() {
           side: signal.buySide, tokenId: signal.tokenId, entryPrice: fl4(signal.entryPrice),
           amount: betAmount, shares, netOut: totalCost, feeRate: fRate,
           tpPrice: fl4(signal.entryPrice + cfg.tpSpread),
-          stopPrice: fl4(signal.entryPrice - cfg.stopSpread), entryTime: Date.now(),
+          stopPrice: fl4(Math.max(0.01, signal.entryPrice - cfg.stopSpread)), entryTime: Date.now(),
         };
         st.balance = fl2(st.balance - totalCost);
         st.totalFees = fl2(st.totalFees + entryFee);

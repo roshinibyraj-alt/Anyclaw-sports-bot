@@ -11,12 +11,10 @@ const STATE_FILE = path.join(__dirname, 'state.json');
 const STATE_VERSION = 9;
 
 // Strategy params
-const BASE_SHARES = 500;           // 500 UP + 500 DOWN at entry per market
 const SCALP_SIZE = 10;             // 10 shares per scalp order
 const SCALP_OFFSET = 0.02;         // place at bid-0.02 / ask+0.02
 const TP_PRICE = 0.99;             // sell limit at 0.99 in endgame
 const SCALP_END_MINUTES = 4;       // scalp for 4 minutes (out of 5)
-const MARKET_TAKER_FEE = 0.007;    // 0.7% taker fee (market entry)
 
 // ── State ──
 let balance = INITIAL_CAPITAL;
@@ -178,83 +176,95 @@ function runScalp(m) {
   const secs = m.secondsToEnd;
   if (secs <= 0) return;
 
-  // End scalp: last 60s for 5m, last 180s for 15m
   const scalpEnd = m.windowType === '5m' ? 60 : 180;
   if (secs <= scalpEnd) { endScalpPhase(m, ss); return; }
 
   const b = book(m);
   const SIZE = SCALP_SIZE;
 
-  // === UP SIDE ===
-  // If no active orders and nothing held → place buy
-  if (ss.upHeld === 0 && !ss.upBuyOrder && !ss.upSellOrder) {
-    const price = fl4(b.upBid - SCALP_OFFSET);
-    if (price > 0.01) ss.upBuyOrder = { id: id8(), price, shares: SIZE };
-  }
-  // If we hold shares and no sell order → place sell
-  if (ss.upHeld > 0 && !ss.upSellOrder) {
-    const price = fl4(b.upAsk + SCALP_OFFSET);
-    if (price < 0.99) ss.upSellOrder = { id: id8(), price, shares: ss.upHeld };
+  // === UP: Relentless buy at bid-0.02 ===
+  // Always maintain a buy order at current bid-0.02 (updates every tick)
+  const buyPrice = fl4(b.upBid - SCALP_OFFSET);
+  if (buyPrice > 0.01) {
+    if (!ss.upBuyOrder) {
+      ss.upBuyOrder = { id: id8(), price: buyPrice, shares: SIZE, tickCount: 0 };
+    } else {
+      // Update price if bid moved (simulate cancel/replace)
+      ss.upBuyOrder.price = buyPrice;
+      ss.upBuyOrder.tickCount++;
+    }
   }
 
-  // Check buy fill
+  // Check UP buy fill — fills when mid dips to our level
   if (ss.upBuyOrder) {
-    if (b.upMid <= ss.upBuyOrder.price + 0.002 || Math.random() < 0.015) {
-      const cost = fl2(ss.upBuyOrder.shares * ss.upBuyOrder.price);
-      if (cost < 2 || cost > balance * 0.1) { ss.upBuyOrder = null; }
-      else {
+    const fillProb = Math.min(0.08, 0.005 + ss.upBuyOrder.tickCount * 0.002);
+    if (b.upMid <= ss.upBuyOrder.price + 0.001 || Math.random() < fillProb) {
+      const cost = fl2(SIZE * ss.upBuyOrder.price);
+      if (cost >= 2 && cost <= balance * 0.2) {
         balance = fl2(balance - cost);
-        ss.upHeld += ss.upBuyOrder.shares;
+        ss.upHeld += SIZE;
         ss.scalpPnl = fl2(ss.scalpPnl - cost);
-        ss.upBuyOrder = null;
-        logFn(`🟢 BUY ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${fl4(b.upBid - SCALP_OFFSET)}`);
+        logFn(`🟢 BUY ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${ss.upBuyOrder.price}`);
+        // Immediately place sell at ask+0.02
+        const sellPrice = fl4(b.upAsk + SCALP_OFFSET);
+        if (sellPrice < 0.99 && sellPrice > ss.upBuyOrder.price + 0.01) {
+          ss.upSellOrder = { id: id8(), price: sellPrice, shares: SIZE };
+        }
+        // Reset buy for next cycle
+        ss.upBuyOrder = { id: id8(), price: buyPrice, shares: SIZE, tickCount: 0 };
       }
     }
   }
-  // Check sell fill
+
+  // Check UP sell fill
   if (ss.upSellOrder) {
-    if (b.upMid >= ss.upSellOrder.price - 0.002 || Math.random() < 0.02) {
+    if (b.upMid >= ss.upSellOrder.price - 0.002 || Math.random() < 0.03) {
       const proceeds = fl2(ss.upSellOrder.shares * ss.upSellOrder.price);
       balance = fl2(balance + proceeds);
       ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
       ss.scalpCount++;
-      ss.upHeld = 0;
+      ss.upHeld -= ss.upSellOrder.shares;
       ss.upSellOrder = null;
-      logFn(`🔴 SELL ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${fl4(b.upAsk + SCALP_OFFSET)}`);
+      logFn(`🔴 SELL ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${ss.upSellOrder.price}`);
     }
   }
 
-  // === DOWN SIDE === (mirror)
-  if (ss.downHeld === 0 && !ss.downBuyOrder && !ss.downSellOrder) {
-    const price = fl4(b.downBid - SCALP_OFFSET);
-    if (price > 0.01) ss.downBuyOrder = { id: id8(), price, shares: SIZE };
+  // === DOWN: Mirror ===
+  const dnBuyPrice = fl4(b.downBid - SCALP_OFFSET);
+  if (dnBuyPrice > 0.01) {
+    if (!ss.downBuyOrder) {
+      ss.downBuyOrder = { id: id8(), price: dnBuyPrice, shares: SIZE, tickCount: 0 };
+    } else {
+      ss.downBuyOrder.price = dnBuyPrice;
+      ss.downBuyOrder.tickCount++;
+    }
   }
-  if (ss.downHeld > 0 && !ss.downSellOrder) {
-    const price = fl4(b.downAsk + SCALP_OFFSET);
-    if (price < 0.99) ss.downSellOrder = { id: id8(), price, shares: ss.downHeld };
-  }
-
   if (ss.downBuyOrder) {
-    if (b.downMid <= ss.downBuyOrder.price + 0.002 || Math.random() < 0.015) {
-      const cost = fl2(ss.downBuyOrder.shares * ss.downBuyOrder.price);
-      if (cost >= 2 && cost <= balance * 0.1) {
+    const fillProb = Math.min(0.08, 0.005 + ss.downBuyOrder.tickCount * 0.002);
+    if (b.downMid <= ss.downBuyOrder.price + 0.001 || Math.random() < fillProb) {
+      const cost = fl2(SIZE * ss.downBuyOrder.price);
+      if (cost >= 2 && cost <= balance * 0.2) {
         balance = fl2(balance - cost);
-        ss.downHeld += ss.downBuyOrder.shares;
+        ss.downHeld += SIZE;
         ss.scalpPnl = fl2(ss.scalpPnl - cost);
-        ss.downBuyOrder = null;
-        logFn(`🟢 BUY ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${fl4(b.downBid - SCALP_OFFSET)}`);
-      } else { ss.downBuyOrder = null; }
+        logFn(`🟢 BUY ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${ss.downBuyOrder.price}`);
+        const sellPrice = fl4(b.downAsk + SCALP_OFFSET);
+        if (sellPrice < 0.99 && sellPrice > ss.downBuyOrder.price + 0.01) {
+          ss.downSellOrder = { id: id8(), price: sellPrice, shares: SIZE };
+        }
+        ss.downBuyOrder = { id: id8(), price: dnBuyPrice, shares: SIZE, tickCount: 0 };
+      }
     }
   }
   if (ss.downSellOrder) {
-    if (b.downMid >= ss.downSellOrder.price - 0.002 || Math.random() < 0.02) {
+    if (b.downMid >= ss.downSellOrder.price - 0.002 || Math.random() < 0.03) {
       const proceeds = fl2(ss.downSellOrder.shares * ss.downSellOrder.price);
       balance = fl2(balance + proceeds);
       ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
       ss.scalpCount++;
-      ss.downHeld = 0;
+      ss.downHeld -= ss.downSellOrder.shares;
       ss.downSellOrder = null;
-      logFn(`🔴 SELL ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${fl4(b.downAsk + SCALP_OFFSET)}`);
+      logFn(`🔴 SELL ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${ss.downSellOrder.price}`);
     }
   }
 }
@@ -472,7 +482,7 @@ async function tick() {
 async function start(emit, logEmit) {
   emitFn = emit; logEmit = logEmit; startTime = Date.now();
   loadState();
-  logFn(`✅ Strategy v${STATE_VERSION} | Capital: $${fl2(balance)}`);
+  logFn(`✅ Strategy v${STATE_VERSION} | Scalp bot | Capital: $${fl2(balance)}`);
   await discoverMarkets();
   await tick();
   setInterval(tick, 1000); // check every 1s

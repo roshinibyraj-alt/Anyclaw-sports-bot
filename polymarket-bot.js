@@ -15,6 +15,7 @@ const SCALP_SIZE = 10;             // 10 shares per scalp order
 const SCALP_OFFSET = 0.02;         // place at bid-0.02 / ask+0.02
 const TP_PRICE = 0.99;             // sell limit at 0.99 in endgame
 const SCALP_END_MINUTES = 4;       // scalp for 4 minutes (out of 5)
+const OSCILLATION_AMPLITUDE = 0.04;  // max +/- price change per tick for simulation
 
 // ── State ──
 let balance = INITIAL_CAPITAL;
@@ -132,9 +133,20 @@ async function fetchClob() {
   for (const m of active) {
     try {
       const up = await getJson(`${CLOB}/midpoint?token_id=${m.upTokenId}`);
-      if (up && up.mid) m.upMid = parseFloat(up.mid);
+      if (up && up.mid) {
+        m.upMid = parseFloat(up.mid);
+      } else {
+        // Simulate price oscillation (demo mode - CLOB won't have these tokens)
+        const osc = (Math.random() - 0.5) * OSCILLATION_AMPLITUDE * 2;
+        m.upMid = Math.max(0.01, Math.min(0.99, (m.upMid || 0.50) + osc));
+      }
       const dn = await getJson(`${CLOB}/midpoint?token_id=${m.downTokenId}`);
-      if (dn && dn.mid) m.downMid = parseFloat(dn.mid);
+      if (dn && dn.mid) {
+        m.downMid = parseFloat(dn.mid);
+      } else {
+        const osc2 = (Math.random() - 0.5) * OSCILLATION_AMPLITUDE * 2;
+        m.downMid = Math.max(0.01, Math.min(0.99, (m.downMid || 0.50) + osc2));
+      }
       m.secondsToEnd = Math.floor((m.endTime - Date.now()) / 1000);
     } catch(e) {}
   }
@@ -161,10 +173,13 @@ function tryEnter(m) {
   if (b.upAsk >= 0.97 || b.upAsk <= 0.03 || b.downAsk >= 0.97 || b.downAsk <= 0.03) return;
   ss.entered = true;
   ss.entryTime = Date.now();
+  ss.entryBalance = balance;
   ss.phase = 'scalp';
   ss.upHeld = 0; ss.downHeld = 0;
   ss.upBuyOrder = null; ss.upSellOrder = null;
+  ss.upPendingSell = []; // pending sells with cost basis
   ss.downBuyOrder = null; ss.downSellOrder = null;
+  ss.downPendingSell = [];
   ss.scalpPnl = 0; ss.scalpCount = 0;
   ss.baseCost = 0;
 }
@@ -197,42 +212,69 @@ function runScalp(m) {
 
   // Check UP buy fill — fills when mid dips to our level
   if (ss.upBuyOrder) {
-    const fillProb = Math.min(0.08, 0.005 + ss.upBuyOrder.tickCount * 0.002);
-    if (b.upMid <= ss.upBuyOrder.price + 0.001 || Math.random() < fillProb) {
+    // Mid crossing our level OR high fill probability that increases with age
+    const midBelowBuy = b.upMid <= ss.upBuyOrder.price;
+    const fillProb = Math.min(0.90, 0.02 + ss.upBuyOrder.tickCount * 0.015);
+    if (midBelowBuy || Math.random() < fillProb) {
       const cost = fl2(SIZE * ss.upBuyOrder.price);
       if (cost >= 2 && cost <= balance * 0.2) {
+        const filledPrice = ss.upBuyOrder.price;
         balance = fl2(balance - cost);
         ss.upHeld += SIZE;
-        ss.scalpPnl = fl2(ss.scalpPnl - cost);
-        logFn(`🟢 BUY ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${ss.upBuyOrder.price}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'UP',price:ss.upBuyOrder.price,shares:SIZE,pnl:0,reason:'SCALP',time:Date.now()});
+        logFn(`🟢 BUY ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${filledPrice} (mid:${fl4(b.upMid)})`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'UP',price:filledPrice,shares:SIZE,pnl:0,reason:'SCALP',time:Date.now()});
         if(trades.length>1000)trades=trades.slice(-1000);
         // Immediately place sell at ask+0.02
         const sellPrice = fl4(b.upAsk + SCALP_OFFSET);
-        if (sellPrice < 0.99 && sellPrice > ss.upBuyOrder.price + 0.01) {
-          ss.upSellOrder = { id: id8(), price: sellPrice, shares: SIZE };
+        if (sellPrice < 0.99 && sellPrice > filledPrice + 0.01) {
+          // Store pending sell with the buy cost basis attached
+          ss.upPendingSell.push({ id: id8(), price: sellPrice, shares: SIZE, buyPrice: filledPrice });
         }
         // Reset buy for next cycle
         ss.upBuyOrder = { id: id8(), price: buyPrice, shares: SIZE, tickCount: 0 };
       }
     }
   }
-
   // Check UP sell fill
-  if (ss.upSellOrder) {
-    if (b.upMid >= ss.upSellOrder.price - 0.002 || Math.random() < 0.03) {
-      const proceeds = fl2(ss.upSellOrder.shares * ss.upSellOrder.price);
-      balance = fl2(balance + proceeds);
-      ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
-      ss.scalpCount++;
-      ss.upHeld -= ss.upSellOrder.shares;
-      ss.upSellOrder = null;
-      trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'UP',price:ss.upSellOrder.price,shares:ss.upSellOrder.shares,pnl:fl2((ss.upSellOrder.price-(ss.upBuyOrder?ss.upBuyOrder.price:0))*ss.upSellOrder.shares),reason:'SCALP',time:Date.now()});
-      if(trades.length>1000)trades=trades.slice(-1000);
-      logFn(`🔴 SELL ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${ss.upSellOrder.price}`);
+  if (ss.upSellOrder || ss.upPendingSell.length > 0) {
+    // Process pending sells first (they have correct cost basis)
+    const toSell = ss.upPendingSell;
+    for (let i = toSell.length - 1; i >= 0; i--) {
+      const order = toSell[i];
+      const midAboveSell = b.upMid >= order.price - 0.002;
+      const sellFillProb = Math.min(0.90, 0.02 + (order.tickCount || 0) * 0.02);
+      if (midAboveSell || Math.random() < sellFillProb) {
+        const proceeds = fl2(order.shares * order.price);
+        balance = fl2(balance + proceeds);
+        const pnl = fl2((order.price - order.buyPrice) * order.shares);
+        ss.scalpPnl = fl2(ss.scalpPnl + proceeds - (order.buyPrice * order.shares));
+        ss.scalpCount++;
+        totalRealizedPnl = fl2(totalRealizedPnl + pnl);
+        if (pnl >= 0) wins++; else losses++;
+        ss.upHeld -= order.shares;
+        logFn(`🔴 SELL ${m.asset.toUpperCase()} UP ${order.shares}sh @ $${order.price} (buy:$${order.buyPrice}) PnL:$${fl2(pnl)}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'UP',price:order.price,shares:order.shares,pnl,reason:'SCALP',time:Date.now()});
+        if(trades.length>1000)trades=trades.slice(-1000);
+        toSell.splice(i, 1);
+      } else {
+        order.tickCount = (order.tickCount || 0) + 1;
+      }
+    }
+    // Also check the legacy single sell order (for endgame TP)
+    if (ss.upSellOrder) {
+      const o = ss.upSellOrder;
+      const midAboveSell = b.upMid >= o.price - 0.002;
+      if (midAboveSell || o.price >= 0.98) {
+        const proceeds = fl2(o.shares * o.price);
+        balance = fl2(balance + proceeds);
+        ss.upHeld -= o.shares;
+        ss.upSellOrder = null;
+        logFn(`🔴 TP SELL ${m.asset.toUpperCase()} UP ${o.shares}sh @ $${o.price}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'UP',price:o.price,shares:o.shares,pnl:0,reason:'ENDGAME',time:Date.now()});
+        if(trades.length>1000)trades=trades.slice(-1000);
+      }
     }
   }
-
   // === DOWN: Mirror ===
   const dnBuyPrice = fl4(b.downBid - SCALP_OFFSET);
   if (dnBuyPrice > 0.01) {
@@ -244,44 +286,70 @@ function runScalp(m) {
     }
   }
   if (ss.downBuyOrder) {
-    const fillProb = Math.min(0.08, 0.005 + ss.downBuyOrder.tickCount * 0.002);
-    if (b.downMid <= ss.downBuyOrder.price + 0.001 || Math.random() < fillProb) {
+    const midBelowBuy = b.downMid <= ss.downBuyOrder.price;
+    const fillProb = Math.min(0.90, 0.02 + ss.downBuyOrder.tickCount * 0.015);
+    if (midBelowBuy || Math.random() < fillProb) {
       const cost = fl2(SIZE * ss.downBuyOrder.price);
       if (cost >= 2 && cost <= balance * 0.2) {
+        const filledPrice = ss.downBuyOrder.price;
         balance = fl2(balance - cost);
         ss.downHeld += SIZE;
-        ss.scalpPnl = fl2(ss.scalpPnl - cost);
-        logFn(`🟢 BUY ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${ss.downBuyOrder.price}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'DOWN',price:ss.downBuyOrder.price,shares:SIZE,pnl:0,reason:'SCALP',time:Date.now()});
+        logFn(`🟢 BUY ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${filledPrice} (mid:${fl4(b.downMid)})`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'DOWN',price:filledPrice,shares:SIZE,pnl:0,reason:'SCALP',time:Date.now()});
         if(trades.length>1000)trades=trades.slice(-1000);
         const sellPrice = fl4(b.downAsk + SCALP_OFFSET);
-        if (sellPrice < 0.99 && sellPrice > ss.downBuyOrder.price + 0.01) {
-          ss.downSellOrder = { id: id8(), price: sellPrice, shares: SIZE };
+        if (sellPrice < 0.99 && sellPrice > filledPrice + 0.01) {
+          ss.downPendingSell.push({ id: id8(), price: sellPrice, shares: SIZE, buyPrice: filledPrice });
         }
         ss.downBuyOrder = { id: id8(), price: dnBuyPrice, shares: SIZE, tickCount: 0 };
       }
     }
   }
-  if (ss.downSellOrder) {
-    if (b.downMid >= ss.downSellOrder.price - 0.002 || Math.random() < 0.03) {
-      const proceeds = fl2(ss.downSellOrder.shares * ss.downSellOrder.price);
-      balance = fl2(balance + proceeds);
-      ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
-      ss.scalpCount++;
-      ss.downHeld -= ss.downSellOrder.shares;
-      ss.downSellOrder = null;
-      trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'DOWN',price:ss.downSellOrder.price,shares:ss.downSellOrder.shares,pnl:fl2((ss.downSellOrder.price-(ss.downBuyOrder?ss.downBuyOrder.price:0))*ss.downSellOrder.shares),reason:'SCALP',time:Date.now()});
-      if(trades.length>1000)trades=trades.slice(-1000);
-      logFn(`🔴 SELL ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${ss.downSellOrder.price}`);
+  if (ss.downSellOrder || ss.downPendingSell.length > 0) {
+    const toSell = ss.downPendingSell;
+    for (let i = toSell.length - 1; i >= 0; i--) {
+      const order = toSell[i];
+      const midAboveSell = b.downMid >= order.price - 0.002;
+      const sellFillProb = Math.min(0.90, 0.02 + (order.tickCount || 0) * 0.02);
+      if (midAboveSell || Math.random() < sellFillProb) {
+        const proceeds = fl2(order.shares * order.price);
+        balance = fl2(balance + proceeds);
+        const pnl = fl2((order.price - order.buyPrice) * order.shares);
+        ss.scalpPnl = fl2(ss.scalpPnl + proceeds - (order.buyPrice * order.shares));
+        ss.scalpCount++;
+        totalRealizedPnl = fl2(totalRealizedPnl + pnl);
+        if (pnl >= 0) wins++; else losses++;
+        ss.downHeld -= order.shares;
+        logFn(`🔴 SELL ${m.asset.toUpperCase()} DN ${order.shares}sh @ $${order.price} (buy:$${order.buyPrice}) PnL:$${fl2(pnl)}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'DOWN',price:order.price,shares:order.shares,pnl,reason:'SCALP',time:Date.now()});
+        if(trades.length>1000)trades=trades.slice(-1000);
+        toSell.splice(i, 1);
+      } else {
+        order.tickCount = (order.tickCount || 0) + 1;
+      }
+    }
+    if (ss.downSellOrder) {
+      const o = ss.downSellOrder;
+      const midAboveSell = b.downMid >= o.price - 0.002;
+      if (midAboveSell || o.price >= 0.98) {
+        const proceeds = fl2(o.shares * o.price);
+        balance = fl2(balance + proceeds);
+        ss.downHeld -= o.shares;
+        ss.downSellOrder = null;
+        logFn(`🔴 TP SELL ${m.asset.toUpperCase()} DN ${o.shares}sh @ $${o.price}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'DOWN',price:o.price,shares:o.shares,pnl:0,reason:'ENDGAME',time:Date.now()});
+        if(trades.length>1000)trades=trades.slice(-1000);
+      }
     }
   }
 }
-
 function endScalpPhase(m, ss) {
   ss.phase = 'endgame';
   // Cancel unfilled buy orders
   ss.upBuyOrder = null;
   ss.downBuyOrder = null;
+  ss.upPendingSell = [];
+  ss.downPendingSell = [];
   // Keep any held shares — will TP or resolve
   if (ss.upHeld > 0 && !ss.upSellOrder) {
     ss.upSellOrder = { id: id8(), price: TP_PRICE, shares: ss.upHeld };
@@ -335,41 +403,50 @@ function resolve(m) {
   const ss = strategyState[m.slug];
   if (!ss || !ss.entered || ss.phase === 'resolved') return;
   const secs = m.secondsToEnd;
-  if (secs > -15) return; // wait 15s after end
+  if (secs > -15) return;
 
   ss.phase = 'resolved';
 
-  // Remaining held shares resolve naturally
-  const upWon = (m.upMid || m.upPrice) >= 0.50;
-  let finalPnl = ss.scalpPnl;
+  const b = book(m);
+  const winnerUp = b.upMid >= b.downMid;
+  
+  // Add settlement value for held shares (cost already deducted from balance)
   if (ss.upHeld > 0) {
-    const val = upWon ? 1.00 : 0.00;
-    balance = fl2(balance + fl2(ss.upHeld * val));
+    const val = fl2(winnerUp ? ss.upHeld * 0.99 : ss.upHeld * 0.01);
+    balance = fl2(balance + val);
+    logFn('🏁 RESOLVE ' + m.asset.toUpperCase() + ' ' + m.windowType + ': UP ' + ss.upHeld + 'sh settle $' + (winnerUp ? '0.99' : '0.01') + ' = $' + val);
   }
   if (ss.downHeld > 0) {
-    const val = upWon ? 0.00 : 1.00;
-    balance = fl2(balance + fl2(ss.downHeld * val));
+    const val = fl2(!winnerUp ? ss.downHeld * 0.99 : ss.downHeld * 0.01);
+    balance = fl2(balance + val);
+    logFn('🏁 RESOLVE ' + m.asset.toUpperCase() + ' ' + m.windowType + ': DN ' + ss.downHeld + 'sh settle $' + (!winnerUp ? '0.99' : '0.01') + ' = $' + val);
   }
-  // Don't double-count — scalpPnl already includes buy costs and sell proceeds
-  // Remaining held shares are pure resolution value
+  
+  // Add mid-price for pending sells (buy cost already deducted)
+  for (const o of (ss.upPendingSell || [])) {
+    const val = fl2(b.upMid * o.shares);
+    balance = fl2(balance + val);
+    const pnl = fl2(val - (o.buyPrice * o.shares));
+    if (pnl >= 0) wins++; else losses++;
+  }
+  for (const o of (ss.downPendingSell || [])) {
+    const val = fl2(b.downMid * o.shares);
+    balance = fl2(balance + val);
+    const pnl = fl2(val - (o.buyPrice * o.shares));
+    if (pnl >= 0) wins++; else losses++;
+  }
 
-  totalRealizedPnl = fl4(totalRealizedPnl + ss.scalpPnl);
-  if (ss.scalpPnl >= 0) wins++; else losses++;
-
-  logFn(`${ss.scalpPnl>=0?'💰':'❌'} RESOLVED ${m.asset.toUpperCase()} ${m.windowType} | Scalps:${ss.scalpCount} | Held UP:${ss.upHeld} DN:${ss.downHeld} | ScalpPnL:$${fl2(ss.scalpPnl)}`);
-
-  trades.push({
-    slug: m.slug, asset: m.asset, windowType: m.windowType,
-    scalpCount: ss.scalpCount, scalpPnl: fl2(ss.scalpPnl),
-    pnl: fl2(ss.scalpPnl), reason: 'RESOLVED',
-    time: ss.entryTime, exitTime: Date.now(),
-  });
-  if (trades.length > 500) trades = trades.slice(-500);
+  // Total window PnL = balance change since entry
+  const windowPnl = fl2(balance - ss.entryBalance);
+  totalRealizedPnl = fl2(totalRealizedPnl + windowPnl);
+  logFn('💰 RESOLVED ' + m.asset.toUpperCase() + ' ' + m.windowType + ' | WindowPnL:$' + fl2(windowPnl));
+  trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,scalpCount:ss.scalpCount,pnl:fl2(windowPnl),reason:'RESOLVED',time:ss.entryTime||Date.now(),exitTime:Date.now()});
+  if(trades.length>500)trades=trades.slice(-500);
   delete strategyState[m.slug];
   m.resolved = true;
 }
 
-// ── Main Strategy Loop ──
+
 function strategyTick() {
   const active = Object.values(marketCache).filter(m => m.active);
   if (active.length === 0 || balance < 10) return;
@@ -427,6 +504,7 @@ function buildSnapshot() {
 
   const active = Object.values(marketCache).filter(m => m.active);
   let totalUpShares = 0, totalDownShares = 0;
+  let shares15u = 0, shares15d = 0, shares5u = 0, shares5d = 0;
 
   const marketDisplay = active.map(m => {
     const b = book(m);
@@ -434,6 +512,8 @@ function buildSnapshot() {
     const u = ss ? ss.upHeld : 0;
     const d = ss ? ss.downHeld : 0;
     totalUpShares += u; totalDownShares += d;
+    if (m.windowType === '15m') { shares15u += u; shares15d += d; }
+    else { shares5u += u; shares5d += d; }
     return {
       slug: m.slug.substring(0, 22), asset: m.asset, windowType: m.windowType,
       upPrice: fl4(b.upMid), downPrice: fl4(b.downMid),
@@ -463,8 +543,8 @@ function buildSnapshot() {
     winRate: wins + losses > 0 ? fl4(wins / (wins + losses) * 100) : 0,
     activeMarkets: active.length,
     totalUpShares, totalDownShares,
-    shares15m: { up: 0, dn: 0 },
-    shares5m: { up: totalUpShares, dn: totalDownShares },
+    shares15m: { up: shares15u, dn: shares15d },
+    shares5m: { up: shares5u, dn: shares5d },
     marketDisplay,
     trades: trades.slice(-50).reverse().map(t => ({
       asset: t.asset, windowType: t.windowType, action: t.action || '',

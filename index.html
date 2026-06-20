@@ -3,46 +3,49 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Scalp Bot v9</title>
+<title>Scalp Bot</title>
 <script src="/socket.io/socket.io.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#0d0d1a;--bg2:#1a1a30;--bg3:#262644;--border:#3a3a66;--green:#00ff88;--red:#ff4466;--white:#e8e8f0;--muted:#8888aa;--gold:#ffcc00;--blue:#4488ff;--orange:#ff8844;--btc:#f7931a;--eth:#8888ff;--sol:#00ffcc;--radius:6px;--font:13px}
-body{background:var(--bg);color:var(--white);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:var(--font);line-height:1.3}
-header{background:var(--bg2);border-bottom:1px solid var(--border);padding:6px 8px;position:sticky;top:0;z-index:100}
-.top-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.logo{font-weight:800;font-size:14px;display:flex;align-items:center;gap:6px}
-.dot{width:8px;height:8px;border-radius:50%;display:inline-block}.dot.on{background:var(--green);box-shadow:0 0 10px var(--green)}.dot.off{background:var(--red);box-shadow:0 0 10px var(--red)}
-.stats{display:flex;gap:3px;flex-wrap:wrap;flex:1}
-.stat{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:2px 5px;text-align:center;min-width:44px}
-.stat .sl{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:0.3px}
-.stat .sv{font-size:11px;font-weight:800}
-.stat .sv.g{color:var(--green)}.stat .sv.r{color:var(--red)}.stat .sv.y{color:var(--gold)}.stat .sv.b{color:var(--blue)}.stat .sv.o{color:var(--orange)}
-main{padding:6px;max-width:860px;margin:0 auto}
-.card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:8px;margin-bottom:8px}
-.card-title{font-size:10px;font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);display:flex;justify-content:space-between}
-.card-title span{color:var(--white);font-weight:400}
-.note{background:rgba(68,136,255,0.06);border:1px solid var(--blue);border-radius:var(--radius);padding:6px;margin-bottom:8px;font-size:9px;color:var(--muted);line-height:1.4}
-.window-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
-.w-cell{background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:6px}
-.w-cell.btc{border-left:3px solid var(--btc)}.w-cell.eth{border-left:3px solid var(--eth)}.w-cell.sol{border-left:3px solid var(--sol)}
-.w-cell .wh{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-size:10px}
-.w-cell .wh .w-asset{font-weight:800;font-size:11px;display:flex;gap:4px;align-items:center}
-.w-cell .wh .w-type{background:var(--bg3);border-radius:3px;padding:1px 5px;font-size:8px;font-weight:700;color:var(--gold)}
-.w-cell .wh .w-time{color:var(--muted);font-size:9px}
-.w-cell .w-row{display:flex;gap:4px;margin-bottom:3px}
-.w-cell .w-side{flex:1;padding:3px 5px;border-radius:4px;font-size:9px}
-.w-cell .w-side.up{background:rgba(0,255,136,0.07)}.w-cell .w-side.down{background:rgba(255,68,102,0.07)}
-.w-cell .w-side .ws-label{font-size:7px;text-transform:uppercase;color:var(--muted)}
-.w-cell .w-side .ws-price{font-size:14px;font-weight:900}
-.w-cell .w-side .ws-price.up{color:var(--green)}.w-cell .w-side .ws-price.down{color:var(--red)}
-.w-cell .w-side .ws-book{font-size:7px;color:var(--muted)}
-.w-cell .wi{display:flex;gap:4px;font-size:8px;color:var(--muted);flex-wrap:wrap}
-.w-cell .wi span{background:var(--bg3);border-radius:3px;padding:1px 4px;color:var(--white)}
-.trade-row{display:flex;align-items:center;gap:4px;padding:3px 5px;font-size:9px;border-bottom:1px solid rgba(58,58,102,0.3)}
-.trade-row:last-child{border-bottom:none}
-.empty-state{text-align:center;padding:14px;color:var(--muted);font-size:12px}
-.footer{text-align:center;padding:6px;color:var(--muted);font-size:8px}
+body{background:#ffffff;color:#222;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.4}
+header{background:#f5f5f7;border-bottom:1px solid #ddd;padding:8px 10px;position:sticky;top:0;z-index:100}
+.top-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.logo{font-weight:800;font-size:16px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:4px}
+.dot.on{background:#00cc66;box-shadow:0 0 8px #00cc66}
+.dot.off{background:#ff4444;box-shadow:0 0 8px #ff4444}
+.stats{display:flex;gap:6px;flex-wrap:wrap}
+.stat{background:#fff;border:1px solid #ddd;border-radius:6px;padding:3px 8px;text-align:center}
+.stat .sl{font-size:9px;color:#888;text-transform:uppercase}
+.stat .sv{font-size:14px;font-weight:700}
+.g{color:#00aa55}.r{color:#e53e3e}.y{color:#d4a017}.b{color:#3366ff}.o{color:#e67e22}
+main{padding:8px;max-width:1000px;margin:0 auto}
+.card{background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:10px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+.card-title{font-size:11px;font-weight:700;margin-bottom:8px;text-transform:uppercase;color:#888;display:flex;justify-content:space-between}
+.card-title span{color:#333;font-weight:400}
+.note{background:#f0f7ff;border:1px solid #cce5ff;border-radius:6px;padding:8px;margin-bottom:10px;font-size:11px;color:#555}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.mcell{background:#fafafa;border:1px solid #e8e8e8;border-radius:6px;padding:8px}
+.mcell.btc{border-left:4px solid #f7931a}
+.mcell.eth{border-left:4px solid #8888ff}
+.mcell.sol{border-left:4px solid #00cc99}
+.mcell .mh{display:flex;justify-content:space-between;margin-bottom:4px;font-size:12px}
+.mcell .mh .ma{font-weight:700;font-size:13px}
+.mcell .mh .mt{background:#eee;border-radius:3px;padding:0 5px;font-size:9px;font-weight:700;color:#666}
+.mcell .mh .mr{color:#888;font-size:11px}
+.mcell .row{display:flex;gap:6px;margin-bottom:4px}
+.mcell .side{flex:1;padding:4px 6px;border-radius:4px;font-size:11px}
+.mcell .side.up{background:#e8f8ee}.mcell .side.down{background:#fde8e8}
+.mcell .side .sl{font-size:8px;text-transform:uppercase;color:#888}
+.mcell .side .sp{font-size:18px;font-weight:900}
+.mcell .side .sp.up{color:#00aa55}.mcell .side .sp.down{color:#e53e3e}
+.mcell .side .sb{font-size:9px;color:#888}
+.mcell .info{display:flex;gap:6px;font-size:10px;color:#666;flex-wrap:wrap}
+.mcell .info span{background:#f0f0f0;border-radius:3px;padding:2px 6px;color:#333}
+.tr{display:flex;align-items:center;gap:6px;padding:4px 6px;font-size:11px;border-bottom:1px solid #f0f0f0}
+.tr:last-child{border-bottom:none}
+.empty{text-align:center;padding:20px;color:#aaa;font-size:13px}
+.footer{text-align:center;padding:8px;color:#aaa;font-size:10px}
 </style>
 </head>
 <body>
@@ -50,40 +53,43 @@ main{padding:6px;max-width:860px;margin:0 auto}
 <main><div id="noteSection"></div><div id="marketSection"></div><div id="historySection"></div><div class="footer" id="footer"></div></main>
 <script>
 (function(){
-var socket = io({ transports: ['websocket', 'polling'], reconnection: true, reconnectionAttempts: 20 });
+var socket = io({ transports: ['websocket', 'polling'], reconnection: true });
 function fmt(v){return typeof v==='number'?v.toFixed(4):(v||'0');}
 function fmt2(v){return typeof v==='number'?v.toFixed(2):(v||'0');}
 function render(d){
   if(!d)return;
   document.getElementById('dot').className=d.connected?'dot on':'dot off';
   var eq=d.equity||d.balance||0,initEq=d.initialEquity||10000,pnl=eq-initEq,pnlPct=initEq?((pnl/initEq)*100).toFixed(1):'0';
-  var h='<div class="stat"><div class="sl">Eq</div><div class="sv '+(eq>=initEq?'g':'r')+'">$'+fmt2(eq)+'</div></div>';
-  h+='<div class="stat"><div class="sl">PnL</div><div class="sv '+(pnl>=0?'g':'r')+'">'+(pnl>=0?'+':'')+'$'+fmt2(Math.abs(pnl))+' ('+pnlPct+'%)</div></div>';
-  h+='<div class="stat"><div class="sl">Win</div><div class="sv y">'+d.wins+'/'+d.totalTrades+'</div></div>';
-  h+='<div class="stat"><div class="sl">WR</div><div class="sv g">'+(d.winRate||0).toFixed(0)+'%</div></div>';
-  h+='<div class="stat"><div class="sl">Mkts</div><div class="sv o">'+d.activeMarkets+'</div></div>';
-  h+='<div class="stat"><div class="sl">Scalps</div><div class="sv g">'+((d.trades||[]).reduce(function(a,t){return a+(t.scalpCount||0);},0))+'</div></div>';
+  var h='<div class="stat"><div class="sl">Equity</div><div class="sv '+(pnl>=0?'g':'r')+'">$'+fmt2(eq)+'</div></div>';
+  h+='<div class="stat"><div class="sl">PnL</div><div class="sv '+(pnl>=0?'g':'r')+'">'+(pnl>=0?'+':'')+'$'+fmt2(Math.abs(pnl))+'</div></div>';
+  h+='<div class="stat"><div class="sl">Wins</div><div class="sv y">'+d.wins+'</div></div>';
+  h+='<div class="stat"><div class="sl">Loss</div><div class="sv r">'+d.losses+'</div></div>';
+  h+='<div class="stat"><div class="sl">Mkts</div><div class="sv b">'+d.activeMarkets+'</div></div>';
+  h+='<div class="stat"><div class="sl">Shares▲▼</div><div class="sv g">'+(d.totalUpShares||0)+'/'+(d.totalDownShares||0)+'</div></div>';
   document.getElementById('headerStats').innerHTML=h;
   document.getElementById('noteSection').innerHTML='<div class="note">'+(d.note||'')+'</div>';
   var ms=document.getElementById('marketSection'),mkt=d.marketDisplay||[];
-  if(mkt.length===0){ms.innerHTML='<div class="card"><div class="card-title">Live Windows</div><div class="empty-state">Waiting for next window...</div></div>';}
+  if(mkt.length===0){ms.innerHTML='<div class="card"><div class="card-title">Live Windows</div><div class="empty">Waiting...</div></div>';}
   else{
-    var mh='<div class="card"><div class="card-title">Live Windows <span>'+mkt.length+'</span></div><div class="window-grid">';
+    var mh='<div class="card"><div class="card-title">Live Windows <span>'+mkt.length+'</span></div><div class="grid">';
     for(var i=0;i<mkt.length;i++){var m=mkt[i],asset=m.asset||'btc',rem=m.secondsToEnd||0,remStr=rem>60?Math.floor(rem/60)+'m '+(rem%60)+'s':rem+'s',wType=m.windowType||'5m',phase=m.entered?(m.phase||'active'):'wait';
-      mh+='<div class="w-cell '+asset+'"><div class="wh"><span class="w-asset">'+asset.toUpperCase()+' <span class="w-type">'+wType+'</span></span><span class="w-time">⏱'+remStr+' <span style="color:var(--gold)">'+phase+'</span></span></div>';
-      mh+='<div class="w-row"><div class="w-side up"><div class="ws-label">UP</div><div class="ws-price up">$'+fmt(m.upPrice)+'</div><div class="ws-book">Bid:'+fmt(m.upBid)+' Ask:'+fmt(m.upAsk)+'</div></div>';
-      mh+='<div class="w-side down"><div class="ws-label">DOWN</div><div class="ws-price down">$'+fmt(m.downPrice)+'</div><div class="ws-book">Bid:'+fmt(m.downBid)+' Ask:'+fmt(m.downAsk)+'</div></div></div>';
-      mh+='<div class="wi"><span>UP Held:'+(m.d||0)+'</span><span>DN:'+(m.d||0)+'</span><span>Scalps:'+(m.scalpCount||0)+'</span><span>PnL:$'+fmt2(m.scalpPnl||0)+'</span></div></div>';}
+      mh+='<div class="mcell '+asset+'"><div class="mh"><span class="ma">'+asset.toUpperCase()+'<span class="mt">'+wType+'</span></span><span class="mr">⏱'+remStr+' <b style="color:#d4a017">'+phase+'</b></span></div>';
+      mh+='<div class="row"><div class="side up"><div class="sl">UP</div><div class="sp up">$'+fmt(m.upPrice)+'</div><div class="sb">Bid:'+fmt(m.upBid)+' Ask:'+fmt(m.upAsk)+'</div></div>';
+      mh+='<div class="side down"><div class="sl">DOWN</div><div class="sp down">$'+fmt(m.downPrice)+'</div><div class="sb">Bid:'+fmt(m.downBid)+' Ask:'+fmt(m.downAsk)+'</div></div></div>';
+      mh+='<div class="info"><span>Hold UP:'+(m.upHeld||0)+'</span><span>DN:'+(m.downHeld||0)+'</span><span>Scalps:'+(m.scalpCount||0)+'</span><span>PnL:$'+fmt2(m.scalpPnl||0)+'</span></div></div>';}
     mh+='</div></div>';ms.innerHTML=mh;}
   var ts=document.getElementById('historySection'),trades=d.trades||[];
-  if(trades.length===0){ts.innerHTML='<div class="card"><div class="card-title">Resolved Windows <span>0</span></div><div class="empty-state">No windows resolved yet</div></div>';}
-  else{var th='<div class="card"><div class="card-title">Resolved Windows <span>'+trades.length+'</span></div>';
-    for(var i=0;i<Math.min(trades.length,20);i++){var t=trades[i],win=(t.pnl||0)>=0;
-      th+='<div class="trade-row"><span style="font-weight:700;font-size:10px;'+(win?'color:var(--green)':'color:var(--red)')+'">'+(t.pnl>=0?'+':'')+fmt2(t.pnl)+'</span>';
-      th+='<span style="font-size:8px;color:var(--muted)">'+(t.asset||'').toUpperCase()+' '+(t.windowType||'')+'</span>';
-      th+='<span style="font-size:8px;color:var(--muted)">'+(t.scalpCount||0)+' scalps</span>';
-      th+='<span style="color:var(--muted);font-size:8px;margin-left:auto">'+(t.reason||'')+'</span></div>';}
-    th+='</div>';ts.innerHTML=th;}
+  var th='<div class="card"><div class="card-title">Trade History <span>'+trades.length+'</span></div>';
+  if(trades.length===0){th+='<div class="empty">No trades yet</div>';}
+  else{
+    for(var i=0;i<Math.min(trades.length,50);i++){var t=trades[i],win=(t.pnl||0)>=0,act=t.action||'';
+      var color=act==='BUY'?'var(--b)':(act==='SELL'?'var(--g)':(act==='TP'?'var(--y)':''));
+      th+='<div class="tr"><span style="font-weight:700;font-size:11px;color:'+(win?'#00aa55':'#e53e3e')+'">'+(t.pnl>=0?'+':'')+fmt2(t.pnl)+'</span>';
+      th+='<span style="font-size:10px;font-weight:600;color:'+(act==='BUY'?'#3366ff':(act==='SELL'?'#00aa55':'#d4a017'))+'">'+act+'</span>';
+      th+='<span style="font-size:10px;color:#555">'+(t.asset||'').toUpperCase()+' '+(t.side||'')+'</span>';
+      th+='<span style="font-size:10px;color:#888">$'+fmt(t.price||0)+' x'+(t.shares||0)+'</span>';
+      th+='<span style="font-size:10px;color:#888;margin-left:auto">'+(t.reason||'')+'</span></div>';}}
+  th+='</div>';ts.innerHTML=th;
   var up=d.uptime||0;
   document.getElementById('footer').textContent='Uptime '+(up>3600?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':up>60?Math.floor(up/60)+'m '+up%60+'s':up+'s')+' | Disc '+d.discoveryCount+' | Fees $'+fmt2(d.totalFees||0);
 }

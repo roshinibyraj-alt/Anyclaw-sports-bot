@@ -205,6 +205,8 @@ function runScalp(m) {
         ss.upHeld += SIZE;
         ss.scalpPnl = fl2(ss.scalpPnl - cost);
         logFn(`🟢 BUY ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${ss.upBuyOrder.price}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'UP',price:ss.upBuyOrder.price,shares:SIZE,pnl:0,reason:'SCALP',time:Date.now()});
+        if(trades.length>1000)trades=trades.slice(-1000);
         // Immediately place sell at ask+0.02
         const sellPrice = fl4(b.upAsk + SCALP_OFFSET);
         if (sellPrice < 0.99 && sellPrice > ss.upBuyOrder.price + 0.01) {
@@ -225,6 +227,8 @@ function runScalp(m) {
       ss.scalpCount++;
       ss.upHeld -= ss.upSellOrder.shares;
       ss.upSellOrder = null;
+      trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'UP',price:ss.upSellOrder.price,shares:ss.upSellOrder.shares,pnl:fl2((ss.upSellOrder.price-(ss.upBuyOrder?ss.upBuyOrder.price:0))*ss.upSellOrder.shares),reason:'SCALP',time:Date.now()});
+      if(trades.length>1000)trades=trades.slice(-1000);
       logFn(`🔴 SELL ${m.asset.toUpperCase()} UP ${SIZE}sh @ $${ss.upSellOrder.price}`);
     }
   }
@@ -248,6 +252,8 @@ function runScalp(m) {
         ss.downHeld += SIZE;
         ss.scalpPnl = fl2(ss.scalpPnl - cost);
         logFn(`🟢 BUY ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${ss.downBuyOrder.price}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'DOWN',price:ss.downBuyOrder.price,shares:SIZE,pnl:0,reason:'SCALP',time:Date.now()});
+        if(trades.length>1000)trades=trades.slice(-1000);
         const sellPrice = fl4(b.downAsk + SCALP_OFFSET);
         if (sellPrice < 0.99 && sellPrice > ss.downBuyOrder.price + 0.01) {
           ss.downSellOrder = { id: id8(), price: sellPrice, shares: SIZE };
@@ -264,6 +270,8 @@ function runScalp(m) {
       ss.scalpCount++;
       ss.downHeld -= ss.downSellOrder.shares;
       ss.downSellOrder = null;
+      trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'DOWN',price:ss.downSellOrder.price,shares:ss.downSellOrder.shares,pnl:fl2((ss.downSellOrder.price-(ss.downBuyOrder?ss.downBuyOrder.price:0))*ss.downSellOrder.shares),reason:'SCALP',time:Date.now()});
+      if(trades.length>1000)trades=trades.slice(-1000);
       logFn(`🔴 SELL ${m.asset.toUpperCase()} DN ${SIZE}sh @ $${ss.downSellOrder.price}`);
     }
   }
@@ -306,7 +314,9 @@ function runEndgame(m) {
     ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
     ss.upHeld = 0;
     ss.upSellOrder = null;
-    logFn(`💰 TP ${m.asset.toUpperCase()} UP @ $${TP_PRICE}`);
+    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'UP',price:TP_PRICE,shares:ss.upSellOrder.shares,pnl:fl2(proceeds),reason:'TP',time:Date.now()});
+      if(trades.length>1000)trades=trades.slice(-1000);
+      logFn(`💰 TP ${m.asset.toUpperCase()} UP @ $${TP_PRICE}`);
   }
   if (ss.downSellOrder && b.downMid >= TP_PRICE - 0.005) {
     const proceeds = fl2(ss.downSellOrder.shares * TP_PRICE);
@@ -314,7 +324,9 @@ function runEndgame(m) {
     ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
     ss.downHeld = 0;
     ss.downSellOrder = null;
-    logFn(`💰 TP ${m.asset.toUpperCase()} DN @ $${TP_PRICE}`);
+    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'DOWN',price:TP_PRICE,shares:ss.downSellOrder.shares,pnl:fl2(proceeds),reason:'TP',time:Date.now()});
+      if(trades.length>1000)trades=trades.slice(-1000);
+      logFn(`💰 TP ${m.asset.toUpperCase()} DN @ $${TP_PRICE}`);
   }
 }
 
@@ -454,9 +466,10 @@ function buildSnapshot() {
     shares15m: { up: 0, dn: 0 },
     shares5m: { up: totalUpShares, dn: totalDownShares },
     marketDisplay,
-    trades: trades.slice(-20).reverse().map(t => ({
-      asset: t.asset, windowType: t.windowType,
-      scalpCount: t.scalpCount, pnl: t.pnl, reason: t.reason,
+    trades: trades.slice(-50).reverse().map(t => ({
+      asset: t.asset, windowType: t.windowType, action: t.action || '',
+      side: t.side || '', price: t.price || 0, shares: t.shares || 0,
+      scalpCount: t.scalpCount || 0, pnl: t.pnl || 0, reason: t.reason || '',
     })),
     uptime: Math.floor((now - startTime) / 1000),
     discoveryCount,

@@ -376,25 +376,25 @@ function runEndgame(m) {
   }
 
   const b = book(m);
+  // Track TP PnL: we know cost was deducted on buy, proceeds added now
+  // Total PnL for TP will be computed at resolve() via entryBalance
   if (ss.upSellOrder && b.upMid >= TP_PRICE - 0.005) {
     const proceeds = fl2(ss.upSellOrder.shares * TP_PRICE);
     balance = fl2(balance + proceeds);
-    ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
+    logFn(`💰 TP ${m.asset.toUpperCase()} UP ${ss.upSellOrder.shares}sh @ $${TP_PRICE} proceeds:$${proceeds}`);
+    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'UP',price:TP_PRICE,shares:ss.upSellOrder.shares||0,pnl:0,reason:'TP',time:Date.now()});
+    if(trades.length>1000)trades=trades.slice(-1000);
     ss.upHeld = 0;
     ss.upSellOrder = null;
-    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'UP',price:TP_PRICE,shares:ss.upSellOrder.shares,pnl:fl2(proceeds),reason:'TP',time:Date.now()});
-      if(trades.length>1000)trades=trades.slice(-1000);
-      logFn(`💰 TP ${m.asset.toUpperCase()} UP @ $${TP_PRICE}`);
   }
   if (ss.downSellOrder && b.downMid >= TP_PRICE - 0.005) {
     const proceeds = fl2(ss.downSellOrder.shares * TP_PRICE);
     balance = fl2(balance + proceeds);
-    ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
+    logFn(`💰 TP ${m.asset.toUpperCase()} DN ${ss.downSellOrder.shares}sh @ $${TP_PRICE} proceeds:$${proceeds}`);
+    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'DOWN',price:TP_PRICE,shares:ss.downSellOrder.shares||0,pnl:0,reason:'TP',time:Date.now()});
+    if(trades.length>1000)trades=trades.slice(-1000);
     ss.downHeld = 0;
     ss.downSellOrder = null;
-    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'DOWN',price:TP_PRICE,shares:ss.downSellOrder.shares,pnl:fl2(proceeds),reason:'TP',time:Date.now()});
-      if(trades.length>1000)trades=trades.slice(-1000);
-      logFn(`💰 TP ${m.asset.toUpperCase()} DN @ $${TP_PRICE}`);
   }
 }
 

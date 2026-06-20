@@ -20,10 +20,10 @@ const MIN_SECS = 0;                          // trade until end
 const MAX_SPREAD_FOR_ENTRY = 0.06;           // wide book threshold
 const BANKROLL_FRAC_PER_ORDER = 0.02;        // 2% per order max
 const BANKROLL_TOTAL_FRAC = 0.50;            // 50% total exposure
-const TOP_UP_SECS = 120;                     // taker top-up below 120s
-const TOP_UP_MIN_SHARES = 80;                // min imbalance for top-up
-const RESOLUTION_DELAY_SECS = 30;            // wait after end before resolve
-const STALE_ORDER_SECS = 300;                // cancel orders older than this
+const TOP_UP_SECS_15M = 120;                // taker top-up below (15m baseline)
+const TOP_UP_MIN_SHARES_15M = 80;            // min imbalance for top-up (15m baseline)
+const RESOLUTION_DELAY_SECS_15M = 30;        // wait after end before resolve (15m baseline)
+const STALE_ORDER_SECS_15M = 300;            // cancel orders older than this (15m baseline)
 const REFRESH_MS = 500;                      // 500ms loop like real Gabagool
 
 // Taker mode — cross spread when tight
@@ -147,7 +147,7 @@ async function fetchClob() {
       const dn = await getJson(`${CLOB}/midpoint?token_id=${m.downTokenId}`);
       if (dn && dn.mid) m.downMid = parseFloat(dn.mid);
       m.secondsToEnd = Math.floor((m.endTime - Date.now()) / 1000);
-      if (m.secondsToEnd < -RESOLUTION_DELAY_SECS - 60) {
+      if (m.secondsToEnd < -(m.windowType==='5m'?10:30) - 60) {
         if (!m.resolved) m.active = false;
       }
     } catch(e) {}
@@ -219,6 +219,9 @@ function calculateEdge(m) {
   const edge = 1.0 - (bidUp + bidDown);
   return { edge, bidUp, askUp, bidDown, askDown, midUp: (m.upMid || m.upPrice), midDown: (m.downMid || m.downPrice) };
 }
+
+// Scale timing parameters proportionally by window size (15m baseline)
+function windowScaled(val, windowS) { return Math.max(5, Math.round(val * windowS / 900)); }
 
 function calcSkew(slug) {
   const inv = inventory[slug];
@@ -371,8 +374,8 @@ function simulateFills() {
     const m = marketCache[o.slug];
     if (!m) { cancelOrder(o.id, 'NO_MARKET'); continue; }
     const secs = Math.floor((m.endTime - Date.now()) / 1000);
-    if (Date.now() - o.placedAt > STALE_ORDER_SECS * 1000) { cancelOrder(o.id, 'STALE'); continue; }
-    if (!m.active && secs < -RESOLUTION_DELAY_SECS) { cancelOrder(o.id, 'EXPIRED'); continue; }
+    if (Date.now() - o.placedAt > windowScaled(STALE_ORDER_SECS_15M, (m?m.windowS:900)) * 1000) { cancelOrder(o.id, 'STALE'); continue; }
+    if (!m.active && secs < -(m && m.windowType==='5m'?10:30)) { cancelOrder(o.id, 'EXPIRED'); continue; }
     
     const midPrice = o.side === 'UP' ? (m.upMid || m.upPrice) : (m.downMid || m.downPrice);
     
@@ -444,11 +447,11 @@ function takerTopUp() {
   for (const m of Object.values(marketCache)) {
     if (!m.active) continue;
     const secs = Math.floor((m.endTime - now) / 1000);
-    if (secs > TOP_UP_SECS || secs < 0) continue;
+    if (secs > windowScaled(TOP_UP_SECS_15M, m.windowS) || secs < 0) continue;
     const inv = inventory[m.slug];
     if (!inv) continue;
     const imbalance = Math.abs((inv.upShares || 0) - (inv.downShares || 0));
-    if (imbalance < TOP_UP_MIN_SHARES) continue;
+    if (imbalance < windowScaled(TOP_UP_MIN_SHARES_15M, m.windowS)) continue;
     const moreUp = (inv.upShares || 0) > (inv.downShares || 0);
     const lagSide = moreUp ? 'DOWN' : 'UP';
     const lagShares = Math.min(imbalance, 50);
@@ -479,7 +482,7 @@ function managePositions() {
     const m = marketCache[pos.slug];
     if (!m) { positions.splice(i, 1); continue; }
     const secs = Math.floor((m.endTime - now) / 1000);
-    if (secs < -RESOLUTION_DELAY_SECS) {
+    if (secs < -(m? (m.windowType==='5m'?10:30) : 30)) {
       const upWon = (m.upMid || m.upPrice) >= 0.50;
       const won = (pos.direction === 'UP' && upWon) || (pos.direction === 'DOWN' && !upWon);
       const exitP = won ? 1.00 : 0.00;
@@ -515,7 +518,7 @@ function cleanupMarkets() {
   for (const slug of Object.keys(marketCache)) {
     const m = marketCache[slug];
     if (m.resolved) continue;
-    if (m.active && m.secondsToEnd < -RESOLUTION_DELAY_SECS - 120) { m.active = false; m.resolved = true; }
+    if (m.active && m.secondsToEnd < -(m.windowType==='5m'?10:30) - 120) { m.active = false; m.resolved = true; }
   }
 }
 
@@ -528,7 +531,7 @@ function loadState() {
 
 function buildSnapshot() {
   const now = Date.now();
-  for (const m of Object.values(marketCache)) { if (m.active) { m.secondsToEnd = Math.floor((m.endTime - now) / 1000); if (m.secondsToEnd < -RESOLUTION_DELAY_SECS - 60) m.active = false; } }
+  for (const m of Object.values(marketCache)) { if (m.active) { m.secondsToEnd = Math.floor((m.endTime - now) / 1000); if (m.secondsToEnd < -(m.windowType==='5m'?10:30) - 60) m.active = false; } }
   const active = Object.values(marketCache).filter(m => m.active);
   const openPos = positions.filter(p => !p.closed);
   const posValue = openPos.reduce((s, p) => s + p.cost, 0);

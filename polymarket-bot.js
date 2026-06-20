@@ -12,7 +12,7 @@ const STATE_VERSION = 10;
 const SCALP_SIZE = 10;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
-const FEE_RATE = 0.001;
+const FEE_RATE = 0; // 0% maker fee (limit orders)
 
 let balance = INITIAL_CAPITAL;
 let totalRealizedPnl = 0;

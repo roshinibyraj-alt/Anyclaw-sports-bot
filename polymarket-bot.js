@@ -69,17 +69,32 @@ async function getJson(url) {
 function windowEpochs() {
   const now = Math.floor(Date.now() / 1000);
   const ws = 900; const cw = Math.floor(now / ws) * ws;
+  const ws5 = 300; const cw5 = Math.floor(now / ws5) * ws5;
   return [
+    // 15m BTC
     { asset: 'btc', slug: 'btc-updown-15m-' + (cw - 1800), epoch: cw - 1800, windowS: 900, windowType: '15m' },
     { asset: 'btc', slug: 'btc-updown-15m-' + (cw - 900), epoch: cw - 900, windowS: 900, windowType: '15m' },
     { asset: 'btc', slug: 'btc-updown-15m-' + cw, epoch: cw, windowS: 900, windowType: '15m' },
     { asset: 'btc', slug: 'btc-updown-15m-' + (cw + 900), epoch: cw + 900, windowS: 900, windowType: '15m' },
     { asset: 'btc', slug: 'btc-updown-15m-' + (cw + 1800), epoch: cw + 1800, windowS: 900, windowType: '15m' },
+    // 15m ETH
     { asset: 'eth', slug: 'eth-updown-15m-' + (cw - 1800), epoch: cw - 1800, windowS: 900, windowType: '15m' },
     { asset: 'eth', slug: 'eth-updown-15m-' + (cw - 900), epoch: cw - 900, windowS: 900, windowType: '15m' },
     { asset: 'eth', slug: 'eth-updown-15m-' + cw, epoch: cw, windowS: 900, windowType: '15m' },
     { asset: 'eth', slug: 'eth-updown-15m-' + (cw + 900), epoch: cw + 900, windowS: 900, windowType: '15m' },
     { asset: 'eth', slug: 'eth-updown-15m-' + (cw + 1800), epoch: cw + 1800, windowS: 900, windowType: '15m' },
+    // 5m BTC (1/3 window → ~1/3 shares)
+    { asset: 'btc', slug: 'btc-updown-5m-' + (cw5 - 600), epoch: cw5 - 600, windowS: 300, windowType: '5m' },
+    { asset: 'btc', slug: 'btc-updown-5m-' + (cw5 - 300), epoch: cw5 - 300, windowS: 300, windowType: '5m' },
+    { asset: 'btc', slug: 'btc-updown-5m-' + cw5, epoch: cw5, windowS: 300, windowType: '5m' },
+    { asset: 'btc', slug: 'btc-updown-5m-' + (cw5 + 300), epoch: cw5 + 300, windowS: 300, windowType: '5m' },
+    { asset: 'btc', slug: 'btc-updown-5m-' + (cw5 + 600), epoch: cw5 + 600, windowS: 300, windowType: '5m' },
+    // 5m ETH
+    { asset: 'eth', slug: 'eth-updown-5m-' + (cw5 - 600), epoch: cw5 - 600, windowS: 300, windowType: '5m' },
+    { asset: 'eth', slug: 'eth-updown-5m-' + (cw5 - 300), epoch: cw5 - 300, windowS: 300, windowType: '5m' },
+    { asset: 'eth', slug: 'eth-updown-5m-' + cw5, epoch: cw5, windowS: 300, windowType: '5m' },
+    { asset: 'eth', slug: 'eth-updown-5m-' + (cw5 + 300), epoch: cw5 + 300, windowS: 300, windowType: '5m' },
+    { asset: 'eth', slug: 'eth-updown-5m-' + (cw5 + 600), epoch: cw5 + 600, windowS: 300, windowType: '5m' },
   ];
 }
 
@@ -153,6 +168,23 @@ function replicaShares(slug, secondsToEnd) {
     if (secondsToEnd < 300) return 12;
     if (secondsToEnd < 600) return 13;
     return 14;
+  }
+  // 5m windows: 1/3 the time → proportional shares
+  if (slug.startsWith('btc-updown-5m-')) {
+    if (secondsToEnd < 30) return 4;   // <30s → ~1/3 of 11
+    if (secondsToEnd < 60) return 5;   // ~1/3 of 13
+    if (secondsToEnd < 120) return 6;  // ~1/3 of 17
+    if (secondsToEnd < 180) return 7;  // ~1/3 of 19
+    if (secondsToEnd < 240) return 7;
+    return 7;                          // max ~1/3 of 20
+  }
+  if (slug.startsWith('eth-updown-5m-')) {
+    if (secondsToEnd < 30) return 3;   // ~1/3 of 8
+    if (secondsToEnd < 60) return 4;   // ~1/3 of 10
+    if (secondsToEnd < 120) return 4;  // ~1/3 of 12
+    if (secondsToEnd < 180) return 5;  // ~1/3 of 13
+    if (secondsToEnd < 240) return 5;
+    return 5;                          // max ~1/3 of 14
   }
   return 10;
 }

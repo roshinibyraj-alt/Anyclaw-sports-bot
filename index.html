@@ -92,7 +92,7 @@ function render(d){
   h += '<div class="stat"><div class="sl">Pend</div><div class="sv o">'+d.pendingCount+'</div></div>';
   h += '<div class="stat"><div class="sl">Mkts</div><div class="sv o">'+d.activeMarkets+'</div></div>';
   h += '<div class="stat"><div class="sl">Mult</div><div class="sv">'+(d.sizingMultiplier||1).toFixed(2)+'x</div></div>';
-  h += '<div class="stat"><div class="sl">Shr ▲/▼</div><div class="sv g">'+(d.totalUpShares||0)+'/'+(d.totalDownShares||0)+'</div></div>';
+  var d15=(d.shares15m||{}),s15u=d15.up||0,s15d=d15.dn||0,d5=(d.shares5m||{}),s5u=d5.up||0,s5d=d5.dn||0;h += '<div class="stat"><div class="sl">15m Shr</div><div class="sv g">'+s15u+'/'+s15d+'</div></div>';h += '<div class="stat"><div class="sl">5m Shr</div><div class="sv g">'+s5u+'/'+s5d+'</div></div>';
   document.getElementById('headerStats').innerHTML = h;
   document.getElementById('noteSection').innerHTML='<div class="note">'+(d.note||'')+'</div>';
   var ms=document.getElementById('marketSection'),mkt=d.marketDisplay||[];

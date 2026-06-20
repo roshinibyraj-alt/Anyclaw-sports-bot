@@ -116,7 +116,7 @@ function render(d){
   h+='<div class="stat"><div class="sl">Peak Eq</div><div class="sv g">$'+fmt2(d.peakEquity||initEq)+'</div></div>';
   h+='<div class="stat"><div class="sl">Drawdown</div><div class="sv '+ddCls+'">'+dd.toFixed(2)+'%</div></div>';
   h+='<div class="stat"><div class="sl">Max DD</div><div class="sv r">'+(d.maxDrawdown||0).toFixed(2)+'%</div></div>';
-  h+='<div class="stat"><div class="sl">5m UP/DN</div><div class="sv g">'+(d.shares5m?d.shares5m.up:0)+'/'+(d.shares5m?d.shares5m.dn:0)+'</div></div>';
+  
   h+='<div class="stat"><div class="sl">15m UP/DN</div><div class="sv g">'+(d.shares15m?d.shares15m.up:0)+'/'+(d.shares15m?d.shares15m.dn:0)+'</div></div>';
   document.getElementById('headerStats').innerHTML=h;
 

@@ -330,6 +330,9 @@ function takerEntry() {
   }
 }
 
+// Simulated price oscillation for realistic fills
+const priceOscillation = {};
+
 function simulateFills() {
   for (let i = pendingOrders.length - 1; i >= 0; i--) {
     const o = pendingOrders[i];
@@ -338,14 +341,57 @@ function simulateFills() {
     const secs = Math.floor((m.endTime - Date.now()) / 1000);
     if (Date.now() - o.placedAt > STALE_ORDER_SECS * 1000) { cancelOrder(o.id, 'STALE'); continue; }
     if (!m.active && secs < -RESOLUTION_DELAY_SECS) { cancelOrder(o.id, 'EXPIRED'); continue; }
-    const curPrice = o.side === 'UP' ? (m.upMid || m.upPrice) : (m.downMid || m.downPrice);
+    
+    const midPrice = o.side === 'UP' ? (m.upMid || m.upPrice) : (m.downMid || m.downPrice);
+    
+    // Simulate realistic price oscillation around the midpoint
+    // In real speed markets, the price oscillates rapidly between bid/ask levels
+    // The midpoint is just a probability indicator; actual fill price fluctuates
+    if (!priceOscillation[o.id]) {
+      priceOscillation[o.id] = { phase: Math.random() * 6.28, velocity: (Math.random() - 0.5) * 0.002 };
+    }
+    const osc = priceOscillation[o.id];
+    osc.phase += 0.1 + Math.random() * 0.05;  // oscillation speed
+    osc.velocity += (Math.random() - 0.5) * 0.0005;
+    osc.velocity = Math.max(-0.003, Math.min(0.003, osc.velocity));
+    
+    // Simulated current price with oscillation + drift
+    const amplitude = Math.max(0.01, Math.min(0.05, (1 - midPrice) * midPrice * 0.2)); // wider oscillation when mid is near 0.5
+    const simPrice = midPrice + Math.sin(osc.phase) * amplitude + osc.velocity;
+    const clampedPrice = Math.max(0.01, Math.min(0.99, simPrice));
+    
+    const ageSecs = (Date.now() - o.placedAt) / 1000;
+    
+    // Fill conditions:
+    // 1. Simulated price dropped to or below our limit bid (maker order filled)
+    // 2. Time-based probability (orders fill faster as they age)
     let filled = false;
-    if (curPrice <= o.price + 0.002 && curPrice >= o.price - 0.005) {
-      const prob = Math.min(1, 0.15 + (o.price - curPrice) * 5);
+    
+    // Condition A: Simulated market price touched our limit (like real CLOB)
+    if (clampedPrice <= o.price + 0.001) {
+      filled = true;
+    }
+    
+    // Condition B: Time decay - orders become more likely to fill the longer they sit
+    // Real speed markets have high order velocity
+    if (!filled) {
+      let prob = 0;
+      if (ageSecs < 5) prob = 0.02;       // 2% per 500ms tick in first 5s
+      else if (ageSecs < 15) prob = 0.04;  // 4% per tick
+      else if (ageSecs < 45) prob = 0.06;  // 6% per tick
+      else if (ageSecs < 120) prob = 0.08; // 8% per tick
+      else prob = 0.12;                    // 12% per tick after 2 min
       if (Math.random() < prob) filled = true;
     }
-    if (curPrice <= o.price - 0.003) filled = true;
+    
+    // Condition C: When edge is high (>0.5%), orders fill faster (market tight)
+    if (!filled) {
+      const { edge } = calculateEdge(m);
+      if (edge > 0.005 && Math.random() < 0.03) filled = true;
+    }
+    
     if (filled) {
+      delete priceOscillation[o.id];
       pendingOrders.splice(i, 1);
       const pos = {
         id: o.id, slug: o.slug, asset: o.asset, eventTitle: (m.eventTitle || o.slug),

@@ -62,7 +62,7 @@ function render(d){
   h+='<div class="stat"><div class="sl">Win</div><div class="sv y">'+d.wins+'/'+d.totalTrades+'</div></div>';
   h+='<div class="stat"><div class="sl">WR</div><div class="sv g">'+(d.winRate||0).toFixed(0)+'%</div></div>';
   h+='<div class="stat"><div class="sl">Mkts</div><div class="sv o">'+d.activeMarkets+'</div></div>';
-  h+='<div class="stat"><div class="sl">Shares▲▼</div><div class="sv g">'+(d.totalUpShares||0)+'/'+(d.totalDownShares||0)+'</div></div>';
+  h+='<div class="stat"><div class="sl">Scalps</div><div class="sv g">'+((d.trades||[]).reduce(function(a,t){return a+(t.scalpCount||0);},0))+'</div></div>';
   document.getElementById('headerStats').innerHTML=h;
   document.getElementById('noteSection').innerHTML='<div class="note">'+(d.note||'')+'</div>';
   var ms=document.getElementById('marketSection'),mkt=d.marketDisplay||[];
@@ -73,7 +73,7 @@ function render(d){
       mh+='<div class="w-cell '+asset+'"><div class="wh"><span class="w-asset">'+asset.toUpperCase()+' <span class="w-type">'+wType+'</span></span><span class="w-time">⏱'+remStr+' <span style="color:var(--gold)">'+phase+'</span></span></div>';
       mh+='<div class="w-row"><div class="w-side up"><div class="ws-label">UP</div><div class="ws-price up">$'+fmt(m.upPrice)+'</div><div class="ws-book">Bid:'+fmt(m.upBid)+' Ask:'+fmt(m.upAsk)+'</div></div>';
       mh+='<div class="w-side down"><div class="ws-label">DOWN</div><div class="ws-price down">$'+fmt(m.downPrice)+'</div><div class="ws-book">Bid:'+fmt(m.downBid)+' Ask:'+fmt(m.downAsk)+'</div></div></div>';
-      mh+='<div class="wi"><span>Hold UP:'+(m.upShares||0)+'</span><span>DN:'+(m.downShares||0)+'</span><span>Scalps:'+(m.scalpCount||0)+'</span><span>PnL:$'+fmt2(m.scalpPnl||0)+'</span></div></div>';}
+      mh+='<div class="wi"><span>UP Held:'+(m.d||0)+'</span><span>DN:'+(m.d||0)+'</span><span>Scalps:'+(m.scalpCount||0)+'</span><span>PnL:$'+fmt2(m.scalpPnl||0)+'</span></div></div>';}
     mh+='</div></div>';ms.innerHTML=mh;}
   var ts=document.getElementById('historySection'),trades=d.trades||[];
   if(trades.length===0){ts.innerHTML='<div class="card"><div class="card-title">Resolved Windows <span>0</span></div><div class="empty-state">No windows resolved yet</div></div>';}

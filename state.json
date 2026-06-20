@@ -1,0 +1,357 @@
+{
+  "stateVersion": 10,
+  "balance": 9992.67,
+  "totalRealizedPnl": 1.97,
+  "totalFees": 0.03,
+  "wins": 4,
+  "losses": 0,
+  "trades": [
+    {
+      "slug": "btc-updown-5m-1781993100",
+      "asset": "btc",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993261886,
+      "exitTime": 1781993261887
+    },
+    {
+      "slug": "eth-updown-5m-1781993100",
+      "asset": "eth",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993261887,
+      "exitTime": 1781993261887
+    },
+    {
+      "slug": "sol-updown-5m-1781993100",
+      "asset": "sol",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993261887,
+      "exitTime": 1781993261887
+    },
+    {
+      "slug": "btc-updown-15m-1781992800",
+      "asset": "btc",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993261887,
+      "exitTime": 1781993261887
+    },
+    {
+      "slug": "eth-updown-15m-1781992800",
+      "asset": "eth",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993261887,
+      "exitTime": 1781993261887
+    },
+    {
+      "slug": "sol-updown-15m-1781992800",
+      "asset": "sol",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993261887,
+      "exitTime": 1781993261887
+    },
+    {
+      "slug": "btc-updown-5m-1781993100",
+      "asset": "btc",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993338924,
+      "exitTime": 1781993338924
+    },
+    {
+      "slug": "eth-updown-5m-1781993100",
+      "asset": "eth",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993338924,
+      "exitTime": 1781993338925
+    },
+    {
+      "slug": "sol-updown-5m-1781993100",
+      "asset": "sol",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993338925,
+      "exitTime": 1781993338925
+    },
+    {
+      "slug": "btc-updown-15m-1781992800",
+      "asset": "btc",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993338925,
+      "exitTime": 1781993338925
+    },
+    {
+      "slug": "eth-updown-15m-1781992800",
+      "asset": "eth",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993338925,
+      "exitTime": 1781993338925
+    },
+    {
+      "slug": "sol-updown-15m-1781992800",
+      "asset": "sol",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993338925,
+      "exitTime": 1781993338925
+    },
+    {
+      "slug": "btc-updown-5m-1781993100",
+      "asset": "btc",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993387645,
+      "exitTime": 1781993387646
+    },
+    {
+      "slug": "sol-updown-5m-1781993100",
+      "asset": "sol",
+      "windowType": "5m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993387647,
+      "exitTime": 1781993387647
+    },
+    {
+      "slug": "btc-updown-15m-1781992800",
+      "asset": "btc",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993387647,
+      "exitTime": 1781993387648
+    },
+    {
+      "slug": "eth-updown-15m-1781992800",
+      "asset": "eth",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993387648,
+      "exitTime": 1781993387649
+    },
+    {
+      "slug": "sol-updown-15m-1781992800",
+      "asset": "sol",
+      "windowType": "15m",
+      "scalpCount": 0,
+      "pnl": 0,
+      "reason": "RESOLVED",
+      "time": 1781993387649,
+      "exitTime": 1781993387649
+    },
+    {
+      "slug": "eth-updown-15m-1781993700",
+      "asset": "eth",
+      "windowType": "15m",
+      "action": "BUY",
+      "side": "DOWN",
+      "price": 0.46,
+      "shares": 10,
+      "cost": 4.6,
+      "pnl": 0,
+      "reason": "SCALP",
+      "time": 1781994229378
+    },
+    {
+      "slug": "sol-updown-15m-1781993700",
+      "asset": "sol",
+      "windowType": "15m",
+      "action": "BUY",
+      "side": "UP",
+      "price": 0.6,
+      "shares": 10,
+      "cost": 6,
+      "pnl": 0,
+      "reason": "SCALP",
+      "time": 1781994254738
+    },
+    {
+      "slug": "eth-updown-15m-1781993700",
+      "asset": "eth",
+      "windowType": "15m",
+      "action": "SELL",
+      "side": "DOWN",
+      "price": 0.51,
+      "shares": 10,
+      "cost": 4.6,
+      "pnl": 0.5,
+      "fee": 0.01,
+      "reason": "SCALP",
+      "time": 1781994255017
+    },
+    {
+      "slug": "sol-updown-15m-1781993700",
+      "asset": "sol",
+      "windowType": "15m",
+      "action": "SELL",
+      "side": "UP",
+      "price": 0.65,
+      "shares": 10,
+      "cost": 6,
+      "pnl": 0.5,
+      "fee": 0.01,
+      "reason": "SCALP",
+      "time": 1781994256733
+    },
+    {
+      "slug": "btc-updown-15m-1781993700",
+      "asset": "btc",
+      "windowType": "15m",
+      "action": "BUY",
+      "side": "UP",
+      "price": 0.6,
+      "shares": 10,
+      "cost": 6,
+      "pnl": 0,
+      "reason": "SCALP",
+      "time": 1781994263698
+    },
+    {
+      "slug": "sol-updown-15m-1781993700",
+      "asset": "sol",
+      "windowType": "15m",
+      "action": "BUY",
+      "side": "UP",
+      "price": 0.59,
+      "shares": 10,
+      "cost": 5.9,
+      "pnl": 0,
+      "reason": "SCALP",
+      "time": 1781994263699
+    },
+    {
+      "slug": "btc-updown-15m-1781993700",
+      "asset": "btc",
+      "windowType": "15m",
+      "action": "SELL",
+      "side": "UP",
+      "price": 0.65,
+      "shares": 10,
+      "cost": 6,
+      "pnl": 0.5,
+      "fee": 0.01,
+      "reason": "SCALP",
+      "time": 1781994264682
+    },
+    {
+      "slug": "sol-updown-15m-1781993700",
+      "asset": "sol",
+      "windowType": "15m",
+      "action": "BUY",
+      "side": "DOWN",
+      "price": 0.34,
+      "shares": 10,
+      "cost": 3.4,
+      "pnl": 0,
+      "reason": "SCALP",
+      "time": 1781994265755
+    },
+    {
+      "slug": "btc-updown-15m-1781993700",
+      "asset": "btc",
+      "windowType": "15m",
+      "action": "BUY",
+      "side": "DOWN",
+      "price": 0.29,
+      "shares": 10,
+      "cost": 2.9,
+      "pnl": 0,
+      "reason": "SCALP",
+      "time": 1781994266696
+    },
+    {
+      "slug": "btc-updown-15m-1781993700",
+      "asset": "btc",
+      "windowType": "15m",
+      "action": "SELL",
+      "side": "DOWN",
+      "price": 0.34,
+      "shares": 10,
+      "cost": 2.9,
+      "pnl": 0.5,
+      "fee": 0,
+      "reason": "SCALP",
+      "time": 1781994266696
+    }
+  ],
+  "initialEquity": 10000,
+  "equityHistory": [
+    {
+      "t": 1781993266229,
+      "e": 10000
+    },
+    {
+      "t": 1781993271239,
+      "e": 10000
+    },
+    {
+      "t": 1781993343318,
+      "e": 10000
+    },
+    {
+      "t": 1781993348339,
+      "e": 10000
+    },
+    {
+      "t": 1781993353288,
+      "e": 10000
+    },
+    {
+      "t": 1781993392059,
+      "e": 10000
+    },
+    {
+      "t": 1781993397018,
+      "e": 10000
+    },
+    {
+      "t": 1781993402487,
+      "e": 10000
+    },
+    {
+      "t": 1781994229380,
+      "e": 10000.25
+    },
+    {
+      "t": 1781994256736,
+      "e": 10000.98
+    }
+  ]
+}

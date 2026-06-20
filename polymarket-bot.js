@@ -13,7 +13,7 @@ const STATE_VERSION = 10;
 const SCALP_SIZE = 10;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
-const FEE_RATE = 0.001; // 0.1% taker fee
+const FEE_RATE = 0.001; // 0.1% taker fee (Polymarket standard)
 
 // ── State ──
 let balance = INITIAL_CAPITAL;
@@ -47,7 +47,7 @@ async function getJson(url) {
   } catch (_) { return null; }
 }
 
-// ── Market Discovery ──
+// ── Market Discovery (Gamma only for meta, never for prices) ──
 function windowEpochs() {
   const now = Math.floor(Date.now() / 1000);
   const ws = 900; const cw = Math.floor(now / ws) * ws;
@@ -100,17 +100,22 @@ async function discoverMarkets() {
     const { c, ev, m, tokenIds, prices } = result.value;
 
     const endMs = new Date(ev.endDate || m.endDate || ((c.epoch + c.windowS) * 1000)).getTime();
-    const secs = Math.round((endMs - now) / 1000);
-    const active = secs > 0 && secs <= c.windowS && prices[0] > 0.01 && prices[0] < 0.99;
+    // Use the CLOB lifecycle: window starts at epoch, ends at epoch+windowS
+    // Gamma's endDate can be offset by resolution buffer — we use epoch+windowS for trading
+    const tradingEndMs = (c.epoch + c.windowS) * 1000;
+    const secs = Math.round((tradingEndMs - now) / 1000);
+    const active = secs > 0 && secs <= c.windowS;
 
     marketCache[c.slug] = {
       slug: c.slug, asset: c.asset, epoch: c.epoch, windowS: c.windowS,
       windowType: c.windowType || '5m',
       upTokenId: tokenIds[0], downTokenId: tokenIds[1],
       upPrice: prices[0], downPrice: prices[1],
-      endTime: endMs, startTime: (c.epoch * 1000),
+      endTime: tradingEndMs,
+      gammaEndMs: endMs, // actual Gamma settlement time
+      startTime: (c.epoch * 1000),
       active,
-      resolved: !active && (prices[0] === 1 || prices[0] === 0),
+      resolved: false,
       outcomePrices: prices,
     };
 
@@ -135,8 +140,22 @@ async function discoverMarkets() {
   }
 }
 
-// ── CLOB Price Fetch (REAL data, no random simulation) ──
+// ── CLOB Price Fetch (ONLY CLOB, never Gamma) ──
 async function fetchClob() {
+  const allMkts = Object.values(marketCache);
+  // Update secondsToEnd for ALL markets, not just active ones
+  const now = Date.now();
+  for (const m of allMkts) {
+    m.secondsToEnd = Math.floor((m.endTime - now) / 1000);
+    // Activate if within window and not resolved
+    if (!m.resolved && m.secondsToEnd > 0 && m.secondsToEnd <= m.windowS) {
+      m.active = true;
+    }
+    if (m.secondsToEnd < -30) {
+      m.active = false;
+    }
+  }
+
   const active = Object.values(marketCache).filter(m => m.active);
   const promises = active.map(async m => {
     try {
@@ -147,28 +166,39 @@ async function fetchClob() {
 
       if (upRes && upRes.mid !== undefined) {
         m.upMid = parseFloat(upRes.mid);
+      } else {
+        m.upMid = undefined;
       }
       if (dnRes && dnRes.mid !== undefined) {
         m.downMid = parseFloat(dnRes.mid);
+      } else {
+        m.downMid = undefined;
       }
 
+      // Derive complementary side if only one is available
       if (m.upMid !== undefined && m.downMid === undefined) {
         m.downMid = fl4(1 - m.upMid);
       } else if (m.downMid !== undefined && m.upMid === undefined) {
         m.upMid = fl4(1 - m.downMid);
       }
 
-            logFn('📊 ' + m.slug.substring(0,22) + ' UP:' + fl4(m.upMid) + ' DN:' + fl4(m.downMid));
-      if (m.upMid === undefined) m.upMid = m.upPrice || 0.50;
-      if (m.downMid === undefined) m.downMid = m.downPrice || 0.50;
-    } catch(e) {}
+      // If NEITHER side has CLOB data, deactivate market (not tradeable)
+      if (m.upMid === undefined || m.downMid === undefined) {
+        m.hasClob = false;
+      } else {
+        m.hasClob = true;
+      }
+    } catch(e) {
+      m.hasClob = false;
+    }
   });
   await Promise.all(promises);
 }
 
+// ── Helper: bid/ask spread around CLOB midpoint ──
 function book(m) {
-  const midUp = m.upMid || m.upPrice || 0.50;
-  const midDown = m.downMid || m.downPrice || 0.50;
+  const midUp = m.upMid !== undefined ? m.upMid : 0.50;
+  const midDown = m.downMid !== undefined ? m.downMid : 0.50;
   return {
     upBid: fl4(midUp - 0.005), upAsk: fl4(midUp + 0.005),
     downBid: fl4(midDown - 0.005), downAsk: fl4(midDown + 0.005),
@@ -176,13 +206,16 @@ function book(m) {
   };
 }
 
+// ── Entry ──
 function tryEnter(m) {
   const ss = strategyState[m.slug];
   if (!ss || ss.entered) return;
+  // Only enter if CLOB has live data
+  if (!m.hasClob) return;
   const secs = m.secondsToEnd;
-  if (secs <= 5 || secs > m.windowS) { logFn(); return; }
+  if (secs <= 5 || secs > m.windowS) return;
   const b = book(m);
-  if (b.upAsk >= 0.97 || b.upAsk <= 0.03 || b.downAsk >= 0.97 || b.downAsk <= 0.03) { logFn(); return; }
+  if (b.upAsk >= 0.97 || b.upAsk <= 0.03 || b.downAsk >= 0.97 || b.downAsk <= 0.03) return;
   ss.entered = true;
   ss.entryTime = Date.now();
   ss.entryBalance = balance;
@@ -194,11 +227,14 @@ function tryEnter(m) {
   ss.downPendingSell = [];
   ss.scalpPnl = 0; ss.scalpCount = 0;
   ss.baseCost = 0;
+  logFn(`🟢 ENTER ${m.asset.toUpperCase()} ${m.windowType} | UP:${fl4(b.upMid)} DN:${fl4(b.downMid)} secs:${secs}`);
 }
 
+// ── Scalp loop ──
 function runScalp(m) {
   const ss = strategyState[m.slug];
   if (!ss || !ss.entered || ss.phase !== 'scalp') return;
+  if (!m.hasClob) return;
   const secs = m.secondsToEnd;
   if (secs <= 0) return;
 
@@ -375,6 +411,7 @@ function endScalpPhase(m, ss) {
 function runEndgame(m) {
   const ss = strategyState[m.slug];
   if (!ss || !ss.entered || ss.phase !== 'endgame') return;
+  if (!m.hasClob) return;
   const secs = m.secondsToEnd;
   if (secs < -10) return;
 
@@ -410,6 +447,7 @@ function runEndgame(m) {
   }
 }
 
+// ── Resolution ──
 function resolve(m) {
   const ss = strategyState[m.slug];
   if (!ss || !ss.entered || ss.phase === 'resolved') return;
@@ -466,6 +504,7 @@ function strategyTick() {
   if (active.length === 0 || balance < 10) return;
 
   for (const m of active) {
+    if (!m.hasClob) continue;
     const ss = strategyState[m.slug];
     if (!ss) continue;
     if (!ss.entered) {
@@ -508,13 +547,14 @@ function loadState() {
 function buildSnapshot() {
   const now = Date.now();
   for (const m of Object.values(marketCache)) {
-    if (m.active) {
-      m.secondsToEnd = Math.floor((m.endTime - now) / 1000);
-      if (m.secondsToEnd < -30) m.active = false;
+    m.secondsToEnd = Math.floor((m.endTime - now) / 1000);
+    if (m.secondsToEnd < -30) { m.active = false; m.hasClob = false; }
+    if (m.secondsToEnd > 0 && m.secondsToEnd <= m.windowS && !m.resolved) {
+      m.active = true;
     }
   }
 
-  const active = Object.values(marketCache).filter(m => m.active);
+  const active = Object.values(marketCache).filter(m => m.active && m.hasClob);
   let totalUpShares = 0, totalDownShares = 0;
   let shares15u = 0, shares15d = 0, shares5u = 0, shares5d = 0;
   let unrealizedPnl = 0;
@@ -579,7 +619,7 @@ function buildSnapshot() {
     discoveryCount,
     connected: true,
     timestamp: now,
-    note: `v${STATE_VERSION} | Real CLOB prices | 0.1% fees | ${totalUpShares}UP/${totalDownShares}DN held`,
+    note: `v${STATE_VERSION} | CLOB-only prices | ${FEE_RATE*100}% fees | ${totalUpShares}UP/${totalDownShares}DN held`,
   };
 }
 
@@ -587,8 +627,8 @@ async function tick() {
   try {
     tickCount++;
     if (discoveryCount === 0) { await discoverMarkets(); await fetchClob(); }
-    else if (tickCount % 30 === 0) await discoverMarkets();
-    await fetchClob();
+    else if (tickCount % 15 === 0) await discoverMarkets(); // rediscover every 15s
+    await fetchClob();  // ← updates secondsToEnd + CLOB prices every tick
     strategyTick();
     saveState();
     emitFn('snapshot', buildSnapshot());
@@ -598,7 +638,7 @@ async function tick() {
 async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
   loadState();
-  logFn(`✅ Strategy v${STATE_VERSION} | Scalp bot | Capital: $${fl2(balance)} | EquityHistory: ${equityHistory.length} pts`);
+  logFn(`✅ v${STATE_VERSION} | CLOB-only | Capital: $${fl2(balance)} | ${equityHistory.length} eq pts`);
   await discoverMarkets();
   await tick();
   setInterval(tick, 1000);

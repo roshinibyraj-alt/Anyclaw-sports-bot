@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Gabagool Bot</title>
+<title>Scalp Bot v9</title>
 <script src="/socket.io/socket.io.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -12,9 +12,7 @@ body{background:var(--bg);color:var(--white);font-family:-apple-system,BlinkMacS
 header{background:var(--bg2);border-bottom:1px solid var(--border);padding:6px 8px;position:sticky;top:0;z-index:100}
 .top-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .logo{font-weight:800;font-size:14px;display:flex;align-items:center;gap:6px}
-.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-.dot.on{background:var(--green);box-shadow:0 0 10px var(--green)}
-.dot.off{background:var(--red);box-shadow:0 0 10px var(--red)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}.dot.on{background:var(--green);box-shadow:0 0 10px var(--green)}.dot.off{background:var(--red);box-shadow:0 0 10px var(--red)}
 .stats{display:flex;gap:3px;flex-wrap:wrap;flex:1}
 .stat{background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:2px 5px;text-align:center;min-width:44px}
 .stat .sl{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:0.3px}
@@ -39,21 +37,8 @@ main{padding:6px;max-width:860px;margin:0 auto}
 .w-cell .w-side .ws-price{font-size:14px;font-weight:900}
 .w-cell .w-side .ws-price.up{color:var(--green)}.w-cell .w-side .ws-price.down{color:var(--red)}
 .w-cell .w-side .ws-book{font-size:7px;color:var(--muted)}
-.w-cell .we{display:flex;gap:4px;margin-bottom:3px}
-.w-cell .we .w-edge{background:var(--bg3);border-radius:3px;padding:2px 5px;font-size:8px;font-weight:600}
-.w-cell .we .w-edge.pos{color:var(--green)}.w-cell .we .w-edge.neg{color:var(--red)}
 .w-cell .wi{display:flex;gap:4px;font-size:8px;color:var(--muted);flex-wrap:wrap}
-.w-cell .wi span{background:var(--bg3);border-radius:3px;padding:1px 4px}
-.pos-card{background:var(--bg2);border:1px solid var(--green);border-radius:5px;padding:5px;margin-bottom:4px}
-.pos-card.loss{border-color:var(--red)}
-.pos-card .ph{display:flex;justify-content:space-between;margin-bottom:2px;font-size:10px}
-.pos-card .ph .ph-asset{font-weight:700}
-.pos-card .pd{display:flex;gap:5px;font-size:8px;color:var(--muted);flex-wrap:wrap}
-.pos-card .pd span{color:var(--white);font-weight:600}
-.pending-card{background:var(--bg2);border:1px dashed var(--gold);border-radius:5px;padding:5px;margin-bottom:4px}
-.pending-card .ph{display:flex;justify-content:space-between;font-size:9px}
-.pending-card .ph .ph-side{font-weight:700;color:var(--gold)}
-.pending-card .pd{font-size:8px;color:var(--muted);display:flex;gap:4px;flex-wrap:wrap}
+.w-cell .wi span{background:var(--bg3);border-radius:3px;padding:1px 4px;color:var(--white)}
 .trade-row{display:flex;align-items:center;gap:4px;padding:3px 5px;font-size:9px;border-bottom:1px solid rgba(58,58,102,0.3)}
 .trade-row:last-child{border-bottom:none}
 .empty-state{text-align:center;padding:14px;color:var(--muted);font-size:12px}
@@ -61,20 +46,8 @@ main{padding:6px;max-width:860px;margin:0 auto}
 </style>
 </head>
 <body>
-<header>
-  <div class="top-row">
-    <div class="logo"><span class="dot off" id="dot"></span>Gabagool</div>
-    <div class="stats" id="headerStats"></div>
-  </div>
-</header>
-<main>
-  <div id="noteSection"></div>
-  <div id="marketSection"></div>
-  <div id="pendingSection"></div>
-  <div id="positionSection"></div>
-  <div id="historySection"></div>
-  <div class="footer" id="footer"></div>
-</main>
+<header><div class="top-row"><div class="logo"><span class="dot off" id="dot"></span>ScalpBot</div><div class="stats" id="headerStats"></div></div></header>
+<main><div id="noteSection"></div><div id="marketSection"></div><div id="historySection"></div><div class="footer" id="footer"></div></main>
 <script>
 (function(){
 var socket = io({ transports: ['websocket', 'polling'], reconnection: true, reconnectionAttempts: 20 });
@@ -84,50 +57,35 @@ function render(d){
   if(!d)return;
   document.getElementById('dot').className=d.connected?'dot on':'dot off';
   var eq=d.equity||d.balance||0,initEq=d.initialEquity||10000,pnl=eq-initEq,pnlPct=initEq?((pnl/initEq)*100).toFixed(1):'0';
-  var h = '<div class="stat"><div class="sl">Eq</div><div class="sv '+(eq>=initEq?'g':'r')+'">$'+fmt2(eq)+'</div></div>';
-  h += '<div class="stat"><div class="sl">PnL</div><div class="sv '+(pnl>=0?'g':'r')+'">'+(pnl>=0?'+':'')+'$'+fmt2(Math.abs(pnl))+' ('+pnlPct+'%)</div></div>';
-  h += '<div class="stat"><div class="sl">Win</div><div class="sv y">'+d.wins+'/'+d.totalTrades+'</div></div>';
-  h += '<div class="stat"><div class="sl">WR</div><div class="sv g">'+(d.winRate||0).toFixed(0)+'%</div></div>';
-  h += '<div class="stat"><div class="sl">Pos</div><div class="sv b">'+d.positionsCount+'</div></div>';
-  h += '<div class="stat"><div class="sl">Pend</div><div class="sv o">'+d.pendingCount+'</div></div>';
-  h += '<div class="stat"><div class="sl">Mkts</div><div class="sv o">'+d.activeMarkets+'</div></div>';
-  h += '<div class="stat"><div class="sl">Mult</div><div class="sv">'+(d.sizingMultiplier||1).toFixed(2)+'x</div></div>';
-  var d15=(d.shares15m||{}),s15u=d15.up||0,s15d=d15.dn||0,d5=(d.shares5m||{}),s5u=d5.up||0,s5d=d5.dn||0;h += '<div class="stat"><div class="sl">15m Shr</div><div class="sv g">'+s15u+'/'+s15d+'</div></div>';h += '<div class="stat"><div class="sl">5m Shr</div><div class="sv g">'+s5u+'/'+s5d+'</div></div>';
-  document.getElementById('headerStats').innerHTML = h;
+  var h='<div class="stat"><div class="sl">Eq</div><div class="sv '+(eq>=initEq?'g':'r')+'">$'+fmt2(eq)+'</div></div>';
+  h+='<div class="stat"><div class="sl">PnL</div><div class="sv '+(pnl>=0?'g':'r')+'">'+(pnl>=0?'+':'')+'$'+fmt2(Math.abs(pnl))+' ('+pnlPct+'%)</div></div>';
+  h+='<div class="stat"><div class="sl">Win</div><div class="sv y">'+d.wins+'/'+d.totalTrades+'</div></div>';
+  h+='<div class="stat"><div class="sl">WR</div><div class="sv g">'+(d.winRate||0).toFixed(0)+'%</div></div>';
+  h+='<div class="stat"><div class="sl">Mkts</div><div class="sv o">'+d.activeMarkets+'</div></div>';
+  h+='<div class="stat"><div class="sl">Shares▲▼</div><div class="sv g">'+(d.totalUpShares||0)+'/'+(d.totalDownShares||0)+'</div></div>';
+  document.getElementById('headerStats').innerHTML=h;
   document.getElementById('noteSection').innerHTML='<div class="note">'+(d.note||'')+'</div>';
   var ms=document.getElementById('marketSection'),mkt=d.marketDisplay||[];
   if(mkt.length===0){ms.innerHTML='<div class="card"><div class="card-title">Live Windows</div><div class="empty-state">Waiting for next window...</div></div>';}
   else{
     var mh='<div class="card"><div class="card-title">Live Windows <span>'+mkt.length+'</span></div><div class="window-grid">';
-    for(var i=0;i<mkt.length;i++){var m=mkt[i],asset=m.asset||'btc',rem=m.secondsToEnd||0,remStr=rem>60?Math.floor(rem/60)+'m '+(rem%60)+'s':rem+'s',wType=m.windowType||'15m';
-      mh+='<div class="w-cell '+asset+'"><div class="wh"><span class="w-asset">'+asset.toUpperCase()+' <span class="w-type">'+wType+'</span></span><span class="w-time">⏱ '+remStr+'</span></div>';
+    for(var i=0;i<mkt.length;i++){var m=mkt[i],asset=m.asset||'btc',rem=m.secondsToEnd||0,remStr=rem>60?Math.floor(rem/60)+'m '+(rem%60)+'s':rem+'s',wType=m.windowType||'5m',phase=m.entered?(m.phase||'active'):'wait';
+      mh+='<div class="w-cell '+asset+'"><div class="wh"><span class="w-asset">'+asset.toUpperCase()+' <span class="w-type">'+wType+'</span></span><span class="w-time">⏱'+remStr+' <span style="color:var(--gold)">'+phase+'</span></span></div>';
       mh+='<div class="w-row"><div class="w-side up"><div class="ws-label">UP</div><div class="ws-price up">$'+fmt(m.upPrice)+'</div><div class="ws-book">Bid:'+fmt(m.upBid)+' Ask:'+fmt(m.upAsk)+'</div></div>';
       mh+='<div class="w-side down"><div class="ws-label">DOWN</div><div class="ws-price down">$'+fmt(m.downPrice)+'</div><div class="ws-book">Bid:'+fmt(m.downBid)+' Ask:'+fmt(m.downAsk)+'</div></div></div>';
-      mh+='<div class="we"><span class="w-edge '+(m.edge>=0?'pos':'neg')+'">Edge: '+(m.edge>=0?'+':'')+(m.edge||0).toFixed(2)+'%</span></div>';
-      mh+='<div class="wi"><span>Inv UP:'+(m.invUp||0)+'sh</span><span>Inv DN:'+(m.invDown||0)+'sh</span><span>Pend UP:'+(m.pendingUp||0)+' DN:'+(m.pendingDown||0)+'</span></div></div>';}
+      mh+='<div class="wi"><span>Hold UP:'+(m.upShares||0)+'</span><span>DN:'+(m.downShares||0)+'</span><span>Scalps:'+(m.scalpCount||0)+'</span><span>PnL:$'+fmt2(m.scalpPnl||0)+'</span></div></div>';}
     mh+='</div></div>';ms.innerHTML=mh;}
-  var pds=document.getElementById('pendingSection'),pend=d.pendingOrders||[];
-  if(pend.length===0){pds.innerHTML='';}
-  else{var ph='<div class="card"><div class="card-title">Pending Limit Orders <span>'+pend.length+'</span></div>';
-    for(var i=0;i<pend.length;i++){var o=pend[i];ph+='<div class="pending-card"><div class="ph"><span class="ph-side">'+o.asset.toUpperCase()+' '+o.side+'</span><span>$'+fmt(o.price)+' x '+Math.round(o.shares)+'sh</span></div><div class="pd"><span>$'+fmt2(o.cost)+'</span> | '+o.secondsToEnd+'s left | placed '+o.placedAgo+'s ago</div></div>';}
-    ph+='</div>';pds.innerHTML=ph;}
-  var ps=document.getElementById('positionSection'),pos=d.openPositions||[];
-  if(pos.length===0){ps.innerHTML='<div class="card"><div class="card-title">Filled Positions</div><div class="empty-state">No positions — limit orders pending</div></div>';}
-  else{var ph2='<div class="card"><div class="card-title">Filled Positions <span>'+pos.length+'</span></div>';
-    for(var i=0;i<pos.length;i++){var p=pos[i],cur=p.currentPrice||p.entryPrice,chg=p.entryPrice?((cur-p.entryPrice)/p.entryPrice*100):0,profit=chg>=0,asset=p.asset||'',rem=p.secondsToEnd||0,remStr=rem>60?Math.floor(rem/60)+'m '+(rem%60)+'s':rem+'s';
-      ph2+='<div class="pos-card '+(profit?'':' loss')+'"><div class="ph"><span class="ph-asset">'+asset.toUpperCase()+' '+(p.outcome||'')+'</span><span style="color:'+(profit?'var(--green)':'var(--red)')+'">'+(chg>=0?'+':'')+chg.toFixed(1)+'%</span></div><div class="pd"><span>$'+fmt(p.entryPrice)+' -> $'+fmt(cur)+'</span> | '+Math.round(p.shares)+'sh | $'+fmt2(p.cost)+' | '+(p.windowType||'')+' | '+remStr+'</div></div>';}
-    ph2+='</div>';ps.innerHTML=ph2;}
   var ts=document.getElementById('historySection'),trades=d.trades||[];
-  if(trades.length===0){ts.innerHTML='<div class="card"><div class="card-title">Resolved Trades <span>0</span></div><div class="empty-state">No resolved trades yet</div></div>';}
-  else{var th='<div class="card"><div class="card-title">Resolved Trades <span>'+trades.length+'</span></div>';
+  if(trades.length===0){ts.innerHTML='<div class="card"><div class="card-title">Resolved Windows <span>0</span></div><div class="empty-state">No windows resolved yet</div></div>';}
+  else{var th='<div class="card"><div class="card-title">Resolved Windows <span>'+trades.length+'</span></div>';
     for(var i=0;i<Math.min(trades.length,20);i++){var t=trades[i],win=(t.pnl||0)>=0;
       th+='<div class="trade-row"><span style="font-weight:700;font-size:10px;'+(win?'color:var(--green)':'color:var(--red)')+'">'+(t.pnl>=0?'+':'')+fmt2(t.pnl)+'</span>';
-      th+='<span style="font-size:8px;color:var(--muted)">'+(t.asset||'').toUpperCase()+' '+t.direction+'</span>';
-      th+='<span style="font-size:8px;color:var(--muted)">$'+fmt(t.entryPrice)+'->$'+fmt(t.exitPrice)+'</span>';
-      th+='<span style="color:var(--muted);font-size:8px;margin-left:auto">'+t.reason+'</span></div>';}
+      th+='<span style="font-size:8px;color:var(--muted)">'+(t.asset||'').toUpperCase()+' '+(t.windowType||'')+'</span>';
+      th+='<span style="font-size:8px;color:var(--muted)">'+(t.scalpCount||0)+' scalps</span>';
+      th+='<span style="color:var(--muted);font-size:8px;margin-left:auto">'+(t.reason||'')+'</span></div>';}
     th+='</div>';ts.innerHTML=th;}
   var up=d.uptime||0;
-  document.getElementById('footer').textContent='Uptime '+(up>3600?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':up>60?Math.floor(up/60)+'m '+up%60+'s':up+'s')+' | Expos $'+fmt2(d.totalExposure||0)+'/'+fmt2(d.maxExposure||0)+' | Fees $'+fmt2(d.totalFees||0)+' | Disc '+d.discoveryCount;
+  document.getElementById('footer').textContent='Uptime '+(up>3600?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':up>60?Math.floor(up/60)+'m '+up%60+'s':up+'s')+' | Disc '+d.discoveryCount+' | Fees $'+fmt2(d.totalFees||0);
 }
 socket.on('snapshot',function(d){if(d)render(d);});
 setInterval(function(){fetch('/api/snapshot').then(function(r){return r.json();}).then(function(d){if(d)render(d);}).catch(function(){})},3000);

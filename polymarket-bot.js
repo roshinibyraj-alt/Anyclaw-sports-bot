@@ -24,6 +24,9 @@ let marketCache = {};
 let strategyState = {};
 let initialEquity = INITIAL_CAPITAL;
 let equityHistory = [];
+let peakEquity = INITIAL_CAPITAL;
+let maxDrawdown = 0;
+let windowResults = [];
 let emitFn = () => {};
 let logFn = () => {};
 let startTime = Date.now();
@@ -434,6 +437,8 @@ function resolve(m) {
   totalRealizedPnl = fl2(totalRealizedPnl + windowPnl);
   logFn('💰 RESOLVED ' + m.asset.toUpperCase() + ' ' + m.windowType + ' | WindowsPnL:$' + fl2(windowPnl) + ' (scalps:' + fl2(ss.scalpPnl) + ' settle:' + fl2(settlePnl) + ')');
   trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,scalpCount:ss.scalpCount,tpCount:ss.tpCount,pnl:fl2(windowPnl),scalpPnl:ss.scalpPnl,settlePnl:fl2(settlePnl),reason:'RESOLVED',time:ss.entryTime||Date.now(),exitTime:Date.now()});
+  windowResults.push({asset:m.asset,windowType:m.windowType,pnl:fl2(windowPnl),scalpPnl:ss.scalpPnl,settlePnl:fl2(settlePnl),scalps:ss.scalpCount,time:Date.now()});
+  if (windowResults.length > 100) windowResults = windowResults.slice(-100);
   if(trades.length>500)trades=trades.slice(-500);
   delete strategyState[m.slug];
   m.resolved = true;
@@ -458,7 +463,7 @@ function saveState() {
     fs.writeFileSync(STATE_FILE, JSON.stringify({
       stateVersion: STATE_VERSION, balance, totalRealizedPnl, totalFees,
       wins, losses, trades: trades.slice(-300), initialEquity,
-      equityHistory: equityHistory.slice(-5000),
+      equityHistory: equityHistory.slice(-5000), peakEquity, maxDrawdown, windowResults: windowResults.slice(-50),
     }, null, 2));
   } catch (_) {}
 }
@@ -475,6 +480,9 @@ function loadState() {
         trades = d.trades || [];
         initialEquity = d.initialEquity || INITIAL_CAPITAL;
         equityHistory = d.equityHistory || [];
+        peakEquity = d.peakEquity || INITIAL_CAPITAL;
+        maxDrawdown = d.maxDrawdown || 0;
+        windowResults = d.windowResults || [];
       }
     }
   } catch (_) {}
@@ -527,12 +535,19 @@ function buildSnapshot() {
   });
 
   const equity = fl2(balance + Math.max(0, unrealizedPnl));
+  if (equity > peakEquity) peakEquity = equity;
+  const dd = peakEquity > 0 ? fl4((peakEquity - equity) / peakEquity * 100) : 0;
+  if (dd > maxDrawdown) maxDrawdown = dd;
   if (tickCount % 5 === 0) {
     equityHistory.push({ t: now, e: equity });
     if (equityHistory.length > 10000) equityHistory = equityHistory.slice(-10000);
   }
 
   return {
+    peakEquity: fl2(peakEquity),
+    maxDrawdown,
+    drawdown: dd,
+    windowResults: windowResults.slice(-20).reverse(),
     balance: fl2(balance), equity, initialEquity,
     totalPnl: fl4(totalRealizedPnl), totalFees: fl4(totalFees),
     wins, losses, totalTrades: wins + losses,

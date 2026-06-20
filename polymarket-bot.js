@@ -95,6 +95,18 @@ function windowEpochs() {
     { asset: 'eth', slug: 'eth-updown-5m-' + cw5, epoch: cw5, windowS: 300, windowType: '5m' },
     { asset: 'eth', slug: 'eth-updown-5m-' + (cw5 + 300), epoch: cw5 + 300, windowS: 300, windowType: '5m' },
     { asset: 'eth', slug: 'eth-updown-5m-' + (cw5 + 600), epoch: cw5 + 600, windowS: 300, windowType: '5m' },
+    // 15m SOL
+    { asset: 'sol', slug: 'sol-updown-15m-' + (cw - 1800), epoch: cw - 1800, windowS: 900, windowType: '15m' },
+    { asset: 'sol', slug: 'sol-updown-15m-' + (cw - 900), epoch: cw - 900, windowS: 900, windowType: '15m' },
+    { asset: 'sol', slug: 'sol-updown-15m-' + cw, epoch: cw, windowS: 900, windowType: '15m' },
+    { asset: 'sol', slug: 'sol-updown-15m-' + (cw + 900), epoch: cw + 900, windowS: 900, windowType: '15m' },
+    { asset: 'sol', slug: 'sol-updown-15m-' + (cw + 1800), epoch: cw + 1800, windowS: 900, windowType: '15m' },
+    // 5m SOL
+    { asset: 'sol', slug: 'sol-updown-5m-' + (cw5 - 600), epoch: cw5 - 600, windowS: 300, windowType: '5m' },
+    { asset: 'sol', slug: 'sol-updown-5m-' + (cw5 - 300), epoch: cw5 - 300, windowS: 300, windowType: '5m' },
+    { asset: 'sol', slug: 'sol-updown-5m-' + cw5, epoch: cw5, windowS: 300, windowType: '5m' },
+    { asset: 'sol', slug: 'sol-updown-5m-' + (cw5 + 300), epoch: cw5 + 300, windowS: 300, windowType: '5m' },
+    { asset: 'sol', slug: 'sol-updown-5m-' + (cw5 + 600), epoch: cw5 + 600, windowS: 300, windowType: '5m' },
   ];
 }
 
@@ -155,38 +167,51 @@ async function fetchClob() {
 }
 
 function replicaShares(slug, secondsToEnd) {
+  // 3x scaled for higher risk + SOL added
   if (slug.startsWith('btc-updown-15m-')) {
-    if (secondsToEnd < 60) return 11;
-    if (secondsToEnd < 180) return 13;
-    if (secondsToEnd < 300) return 17;
-    if (secondsToEnd < 600) return 19;
-    return 20;
+    if (secondsToEnd < 60) return 33;
+    if (secondsToEnd < 180) return 39;
+    if (secondsToEnd < 300) return 51;
+    if (secondsToEnd < 600) return 57;
+    return 60;
   }
   if (slug.startsWith('eth-updown-15m-')) {
-    if (secondsToEnd < 60) return 8;
-    if (secondsToEnd < 180) return 10;
-    if (secondsToEnd < 300) return 12;
-    if (secondsToEnd < 600) return 13;
-    return 14;
+    if (secondsToEnd < 60) return 24;
+    if (secondsToEnd < 180) return 30;
+    if (secondsToEnd < 300) return 36;
+    if (secondsToEnd < 600) return 39;
+    return 42;
   }
-  // 5m windows: 1/3 the time → proportional shares
+  if (slug.startsWith('sol-updown-15m-')) {
+    if (secondsToEnd < 60) return 24;
+    if (secondsToEnd < 180) return 30;
+    if (secondsToEnd < 300) return 36;
+    if (secondsToEnd < 600) return 39;
+    return 42;
+  }
+  // 5m windows: same shares as 15m
   if (slug.startsWith('btc-updown-5m-')) {
-    if (secondsToEnd < 30) return 4;   // <30s → ~1/3 of 11
-    if (secondsToEnd < 60) return 5;   // ~1/3 of 13
-    if (secondsToEnd < 120) return 6;  // ~1/3 of 17
-    if (secondsToEnd < 180) return 7;  // ~1/3 of 19
-    if (secondsToEnd < 240) return 7;
-    return 7;                          // max ~1/3 of 20
+    if (secondsToEnd < 30) return 33;
+    if (secondsToEnd < 60) return 39;
+    if (secondsToEnd < 120) return 51;
+    if (secondsToEnd < 180) return 57;
+    return 60;
   }
   if (slug.startsWith('eth-updown-5m-')) {
-    if (secondsToEnd < 30) return 3;   // ~1/3 of 8
-    if (secondsToEnd < 60) return 4;   // ~1/3 of 10
-    if (secondsToEnd < 120) return 4;  // ~1/3 of 12
-    if (secondsToEnd < 180) return 5;  // ~1/3 of 13
-    if (secondsToEnd < 240) return 5;
-    return 5;                          // max ~1/3 of 14
+    if (secondsToEnd < 30) return 24;
+    if (secondsToEnd < 60) return 30;
+    if (secondsToEnd < 120) return 36;
+    if (secondsToEnd < 180) return 39;
+    return 42;
   }
-  return 10;
+  if (slug.startsWith('sol-updown-5m-')) {
+    if (secondsToEnd < 30) return 24;
+    if (secondsToEnd < 60) return 30;
+    if (secondsToEnd < 120) return 36;
+    if (secondsToEnd < 180) return 39;
+    return 42;
+  }
+  return 30;
 }
 
 function dynMultiplier() {

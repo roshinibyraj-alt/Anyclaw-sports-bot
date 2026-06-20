@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Scalp Bot</title>
 <script src="/socket.io/socket.io.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#ffffff;color:#111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.5}
@@ -46,28 +47,58 @@ main{padding:8px;max-width:1000px;margin:0 auto}
 .tr:last-child{border-bottom:none}
 .empty{text-align:center;padding:20px;color:#777;font-size:13px}
 .footer{text-align:center;padding:8px;color:#777;font-size:10px}
+.chart-wrap{width:100%;max-height:250px;margin-bottom:10px}
 </style>
 </head>
 <body>
 <header><div class="top-row"><div class="logo"><span class="dot off" id="dot"></span>ScalpBot</div><div class="stats" id="headerStats"></div></div></header>
-<main><div id="noteSection"></div><div id="marketSection"></div><div id="historySection"></div><div class="footer" id="footer"></div></main>
+<main>
+<div id="noteSection"></div>
+<div class="card"><div class="card-title">Equity Curve</div><div class="chart-wrap"><canvas id="equityChart"></canvas></div></div>
+<div id="marketSection"></div>
+<div id="historySection"></div>
+<div class="footer" id="footer"></div>
+</main>
 <script>
 (function(){
 var socket = io({ transports: ['websocket', 'polling'], reconnection: true });
+var eqChart = null;
+var eqData = { labels: [], values: [] };
 function fmt(v){return typeof v==='number'?v.toFixed(4):(v||'0');}
 function fmt2(v){return typeof v==='number'?v.toFixed(2):(v||'0');}
+function fmtTime(ts){var d=new Date(ts);return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');}
+function initChart(){
+  var ctx=document.getElementById('equityChart').getContext('2d');
+  eqChart=new Chart(ctx,{type:'line',data:{labels:[],datasets:[{label:'Equity ($)',data:[],borderColor:'#3366ff',backgroundColor:'rgba(51,102,255,0.1)',fill:true,tension:0.3,pointRadius:0,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:true,ticks:{maxTicksLimit:10,font:{size:9}},grid:{color:'rgba(0,0,0,0.05)'}},y:{display:true,ticks:{font:{size:10}},grid:{color:'rgba(0,0,0,0.08)'}}}}});
+}
+function updateChart(data){
+  if(!eqChart){initChart();}
+  var labels=[],values=[];
+  var eq=data.equityHistory||[];
+  for(var i=0;i<eq.length;i++){
+    labels.push(fmtTime(eq[i].t));
+    values.push(eq[i].e);
+  }
+  if(labels.length>0){
+    eqChart.data.labels=labels;
+    eqChart.data.datasets[0].data=values;
+    eqChart.update('none');
+  }
+}
 function render(d){
   if(!d)return;
   document.getElementById('dot').className=d.connected?'dot on':'dot off';
   var eq=d.equity||d.balance||0,initEq=d.initialEquity||10000,pnl=eq-initEq,pnlPct=initEq?((pnl/initEq)*100).toFixed(1):'0';
-  var h='<div class="stat"><div class="sl">Balance</div><div class="sv '+(pnl>=0?'g':'r')+'">$'+fmt2(eq)+'</div></div>';
-  h+='<div class="stat"><div class="sl">PnL</div><div class="sv '+(pnl>=0?'g':'r')+'">'+(pnl>=0?'+':'')+'$'+fmt2(Math.abs(pnl))+'</div></div>';
+  var h='<div class="stat"><div class="sl">Equity</div><div class="sv '+(pnl>=0?'g':'r')+'">$'+fmt2(eq)+'</div></div>';
+  h+='<div class="stat"><div class="sl">PnL</div><div class="sv '+(pnl>=0?'g':'r')+'">'+(pnl>=0?'+':'')+'$'+fmt2(Math.abs(pnl))+' ('+pnlPct+'%)</div></div>';
   h+='<div class="stat"><div class="sl">Wins/Loss</div><div class="sv">'+d.wins+'/'+d.losses+'</div></div>';
   h+='<div class="stat"><div class="sl">Markets</div><div class="sv b">'+d.activeMarkets+'</div></div>';
   h+='<div class="stat"><div class="sl">5m UP/DN</div><div class="sv g">'+(d.shares5m?d.shares5m.up:0)+'/'+(d.shares5m?d.shares5m.dn:0)+'</div></div>';
   h+='<div class="stat"><div class="sl">15m UP/DN</div><div class="sv g">'+(d.shares15m?d.shares15m.up:0)+'/'+(d.shares15m?d.shares15m.dn:0)+'</div></div>';
+  h+='<div class="stat"><div class="sl">Fees</div><div class="sv o">$'+fmt2(d.totalFees||0)+'</div></div>';
   document.getElementById('headerStats').innerHTML=h;
   document.getElementById('noteSection').innerHTML='<div class="note" style="font-size:13px;line-height:1.5">'+(d.note||'')+'</div>';
+  updateChart(d);
   var ms=document.getElementById('marketSection'),mkt=d.marketDisplay||[];
   if(mkt.length===0){ms.innerHTML='<div class="card"><div class="card-title">Live Windows</div><div class="empty">Waiting...</div></div>';}
   else{
@@ -83,16 +114,17 @@ function render(d){
   if(trades.length===0){th+='<div class="empty">No trades yet</div>';}
   else{
     for(var i=0;i<Math.min(trades.length,50);i++){var t=trades[i],win=(t.pnl||0)>=0,act=t.action||'';
-      var color=act==='BUY'?'var(--b)':(act==='SELL'?'var(--g)':(act==='TP'?'var(--y)':''));
       th+='<div class="tr"><span style="font-weight:700;font-size:11px;color:'+(win?'#00aa55':'#e53e3e')+'">'+(t.pnl>=0?'+':'')+fmt2(t.pnl)+'</span>';
       th+='<span style="font-size:10px;font-weight:600;color:'+(act==='BUY'?'#3366ff':(act==='SELL'?'#00aa55':'#d4a017'))+'">'+act+'</span>';
       th+='<span style="font-size:10px;color:#333">'+(t.asset||'').toUpperCase()+' '+(t.side||'')+'</span>';
       th+='<span style="font-size:10px;color:#333">$'+fmt(t.price||0)+' x'+(t.shares||0)+'</span>';
+      th+='<span style="font-size:10px;color:#666">Cost:$'+fmt2(t.cost||0)+'</span>';
+      if(t.fee){th+='<span style="font-size:9px;color:#999">Fee:$'+fmt2(t.fee)+'</span>';}
       th+='<span style="font-size:10px;color:#333;margin-left:auto">'+(t.reason||'')+'</span></div>';}}
   th+='</div>';ts.innerHTML=th;
   var up=d.uptime||0;
   var upStr=up>3600?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':up>60?Math.floor(up/60)+'m '+(up%60)+'s':up+'s';
-  document.getElementById('footer').textContent='Uptime '+upStr+' | Discoveries '+d.discoveryCount+' | Fees $'+fmt2(d.totalFees||0);
+  document.getElementById('footer').textContent='Uptime '+upStr+' | '+d.discoveryCount+' discoveries | Fees $'+fmt2(d.totalFees||0)+' | v10';
 }
 socket.on('snapshot',function(d){if(d)render(d);});
 setInterval(function(){fetch('/api/snapshot').then(function(r){return r.json();}).then(function(d){if(d)render(d);}).catch(function(){})},3000);

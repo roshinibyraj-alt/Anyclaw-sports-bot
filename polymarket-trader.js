@@ -278,13 +278,15 @@ class PolymarketTrader {
       return null;
     }
     
-    const salt = Math.floor(Math.random() * Date.now()).toString();
+    // Salt matches official client: Math.round(Math.random() * Date.now())
+    const salt = Math.round(Math.random() * Date.now()).toString();
     const expiration = '0';
-    const nonce = (++this.nonce).toString();
+    // nonce=0: official client default; used only for onchain cancellations, not API ordering
+    const nonce = '0';
     const scale = Math.pow(10, COLLATERAL_DECIMALS);
-    // Get the market's fee rate – MUST match or API rejects with "Invalid order payload"
-    const marketFeeBps = await this.getFeeRate(tokenId);
-    const feeRateBps = marketFeeBps.toString();
+    // feeRateBps must be "0": fees are charged by the protocol separately, not embedded in the order.
+    // Embedding the fetched fee rate causes a signature mismatch ("invalid order version").
+    const feeRateBps = '0';
     // Get dynamic tick size for this market
     const tickSize = await this.getTickSize(tokenId);
     

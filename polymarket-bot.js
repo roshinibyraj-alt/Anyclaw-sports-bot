@@ -532,7 +532,13 @@ async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
   logFn('📦 v10 | ' + (process.env.GIT_COMMIT || 'deploy-' + Date.now().toString(36)));
   
-  trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY, process.env.FUNDER_ADDRESS);
+  const funderAddr = process.env.FUNDER_ADDRESS;
+  const sigType = process.env.SIGNATURE_TYPE || (funderAddr ? '1' : '0');
+  if (funderAddr) {
+    logFn(`🔐 Deposit Wallet mode: funder=${funderAddr.substring(0,10)}... signer_type=${sigType}`);
+  }
+  
+  trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY, funderAddr);
   trader.setLogFn(logFn);
   logFn('🔑 Authenticating with Polymarket CLOB...');
   const authed = await trader.authenticate();
@@ -541,25 +547,26 @@ async function start(emit, logEmit) {
     process.exit(1);
   }
   
-  // Get real balance – try CLOB authenticated endpoint first, then RPC fallback
+  // Get real balance – try on-chain first (handles USDC + PUSD + CTF deposit)
+  // For proxy wallets, on-chain PUSD balance is the source of truth
   try {
     let realBalance = await Promise.race([
-      trader.getBalanceAllowance(),
-      new Promise(r => setTimeout(() => r(-2), 6000))
+      trader.getBalance(),
+      new Promise(r => setTimeout(() => r(-1), 10000))
     ]);
-    if (realBalance === -2) realBalance = -1; // timeout
-    if (realBalance < 0) {
-      // fallback: RPC
-      realBalance = await Promise.race([
-        trader.getBalance(),
-        new Promise(r => setTimeout(() => r(-1), 8000))
+    // Also try CLOB endpoint as supplementary info
+    if (realBalance <= 0) {
+      const clobBal = await Promise.race([
+        trader.getBalanceAllowance(),
+        new Promise(r => setTimeout(() => r(-2), 6000))
       ]);
+      if (clobBal > 0) realBalance = clobBal;
     }
     if (realBalance > 0) {
       balance = realBalance;
       initialEquity = realBalance;
       peakEquity = realBalance;
-      logFn('💰 Real balance: $' + fl2(realBalance));
+      logFn(`💰 Balance: $${fl2(realBalance)}${funderAddr ? ' (PUSD in Deposit Wallet)' : ''}`);
     } else {
       balance = 0;
       initialEquity = 0;
@@ -573,27 +580,27 @@ async function start(emit, logEmit) {
     logFn('💰 Balance fetch error, showing $0');
   }
 
-  logFn('🔴 LIVE TRADING MODE | Capital: $' + fl2(balance));
+  logFn(`🔴 LIVE TRADING MODE | Capital: $${fl2(balance)}${funderAddr ? ' via Deposit Wallet' : ''}`);
   await discoverMarkets();
   await tick();
   setInterval(tick, 1000);
   
-  // Log balance sync every 60s – use CLOB endpoint
+  // Sync balance every 60s – prioritize on-chain (handles PUSD)
   setInterval(async () => {
     try {
       let rb = await Promise.race([
-        trader.getBalanceAllowance(),
-        new Promise(r => setTimeout(() => r(-2), 6000))
+        trader.getBalance(),
+        new Promise(r => setTimeout(() => r(-1), 10000))
       ]);
-      if (rb === -2 || rb < 0) {
+      if (rb < 0) {
         rb = await Promise.race([
-          trader.getBalance(),
+          trader.getBalanceAllowance(),
           new Promise(r => setTimeout(() => r(-1), 6000))
         ]);
       }
       if (rb >= 0 && Math.abs(rb - balance) > 0.01) {
         balance = rb;
-        logFn('💰 Balance synced: $' + fl2(rb));
+        logFn(`💰 Balance synced: $${fl2(rb)}`);
       }
     } catch(_) {}
   }, 60000);

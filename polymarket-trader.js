@@ -9,7 +9,12 @@ const CLOB_API = 'https://clob.polymarket.com';
 const COLLATERAL_DECIMALS = 6;
 const MIN_SHARES = 5; // Polymarket CLOB minimum order size
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || '0', 10);
+const PUSD_TOKEN = '0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb';
+const USDC_TOKEN_OLD = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+const USDC_TOKEN_NEW = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+// Default to Poly Proxy (1) when FUNDER_ADDRESS is set, else EOA (0)
+const hasProxyWallet = !!process.env.FUNDER_ADDRESS;
+const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || (hasProxyWallet ? '1' : '0'), 10);
 
 const AUTH_DOMAIN = {
   EIP712Domain: [
@@ -75,10 +80,15 @@ class PolymarketTrader {
     this.address = this.wallet.address;
     this.signerAddress = this.address;
     this.funderAddress = funderAddress || this.address;
-    this._feeCache = null;
+    this._feeCache = {};
+    this._tickSizeCache = {};
     this.logFn = () => {};
+
     if (funderAddress && funderAddress.toLowerCase() !== this.address.toLowerCase()) {
       console.log(`🔐 Proxy wallet mode: signer=${this.address} maker=${this.funderAddress} sigType=${SIGNATURE_TYPE}`);
+      if (SIGNATURE_TYPE === 0) {
+        console.log('⚠️ SIGNATURE_TYPE is 0 (EOA) but FUNDER_ADDRESS is set. Set SIGNATURE_TYPE=1 for Poly Proxy wallets.');
+      }
     }
     this.apiKey = null;
     this.apiSecret = null;
@@ -166,11 +176,12 @@ class PolymarketTrader {
   }
 
   // ── Get total available balance ──
-  // Checks wallet USDC + Exchange contract deposit.
+  // Checks USDC + PUSD (Polymarket USD) + CTF exchange deposit.
+  // In proxy wallet mode, all checks are against the funder (Deposit Wallet).
   // Supports POLYGON_RPC_URL env var for custom RPC endpoints.
   async getBalance() {
-    const USDC = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
     const EXCHANGE_CTF = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+    const checkAddress = this.funderAddress;
     
     const rpcEnv = process.env.POLYGON_RPC_URL;
     const RPCS = [];
@@ -184,12 +195,13 @@ class PolymarketTrader {
       'https://polygon-rpc.com',
     );
     
-    // Use raw fetch for RPC calls (avoids ethers provider overhead/timeouts)
     for (const rpcUrl of RPCS) {
       try {
         const payload = [
-          {jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:USDC,data:'0x70a08231'+this.address.substring(2).padStart(64,'0')},'latest']},
-          {jsonrpc:'2.0',id:2,method:'eth_call',params:[{to:EXCHANGE_CTF,data:'0x27e235e3'+this.address.substring(2).padStart(64,'0')},'latest']}
+          {jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:USDC_TOKEN_OLD,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
+          {jsonrpc:'2.0',id:2,method:'eth_call',params:[{to:USDC_TOKEN_NEW,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
+          {jsonrpc:'2.0',id:3,method:'eth_call',params:[{to:PUSD_TOKEN,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
+          {jsonrpc:'2.0',id:4,method:'eth_call',params:[{to:EXCHANGE_CTF,data:'0x27e235e3'+checkAddress.substring(2).padStart(64,'0')},'latest']}
         ];
         const resp = await fetch(rpcUrl, {
           method: 'POST',
@@ -200,23 +212,26 @@ class PolymarketTrader {
         if (!resp.ok) continue;
         const results = await resp.json();
         if (!Array.isArray(results)) continue;
-        const walletBal = results[0]?.result ? Number(BigInt(results[0].result)) / 1e6 : 0;
-        const exBal = results[1]?.result ? Number(BigInt(results[1].result)) / 1e6 : 0;
-        const total = walletBal + exBal;
+        const usdcOld = results[0]?.result ? Number(BigInt(results[0].result)) / 1e6 : 0;
+        const usdcNew = results[1]?.result ? Number(BigInt(results[1].result)) / 1e6 : 0;
+        const pusdBal = results[2]?.result ? Number(BigInt(results[2].result)) / 1e6 : 0;
+        const exBal = results[3]?.result ? Number(BigInt(results[3].result)) / 1e6 : 0;
+        const total = usdcOld + usdcNew + pusdBal + exBal;
         return total;
       } catch (_) { continue; }
     }
     return 0;
   }
 
-  // ── Fetch fee rate for a token (cached) ──
+  // ── Fetch fee rate for a token (cached per token) ──
   async getFeeRate(tokenId) {
-    if (this._feeCache && this._feeCache.tokenId === tokenId && Date.now() - this._feeCache.ts < 300000) return this._feeCache.rate;
+    const cached = this._feeCache[tokenId];
+    if (cached && Date.now() - cached.ts < 300000) return cached.rate;
     try {
       const data = await this.fetch(`${CLOB_API}/fee-rate?token_id=${tokenId}`);
       if (data && typeof data.base_fee !== 'undefined') {
         const rate = Number(data.base_fee);
-        this._feeCache = { tokenId, rate, ts: Date.now() };
+        this._feeCache[tokenId] = { rate, ts: Date.now() };
         this.logFn(`💸 Fee rate: ${rate} bps`);
         return rate;
       }
@@ -224,6 +239,21 @@ class PolymarketTrader {
     const fallback = 1000;
     this.logFn(`⚠️ Using default fee rate ${fallback} bps`);
     return fallback;
+  }
+
+  // ── Fetch tick size for a token (cached) ──
+  async getTickSize(tokenId) {
+    const cached = this._tickSizeCache[tokenId];
+    if (cached && Date.now() - cached.ts < 300000) return cached.tickSize;
+    try {
+      const data = await this.fetch(`${CLOB_API}/tick-size?token_id=${tokenId}`);
+      if (data && typeof data.tick_size !== 'undefined') {
+        const tickSize = parseFloat(data.tick_size);
+        this._tickSizeCache[tokenId] = { tickSize, ts: Date.now() };
+        return tickSize;
+      }
+    } catch (_) { /* ignore */ }
+    return 0.01; // fallback default
   }
 
   // ── Get midpoint price (public, no auth) ──
@@ -255,11 +285,13 @@ class PolymarketTrader {
     // Get the market's fee rate – MUST match or API rejects with "Invalid order payload"
     const marketFeeBps = await this.getFeeRate(tokenId);
     const feeRateBps = marketFeeBps.toString();
+    // Get dynamic tick size for this market
+    const tickSize = await this.getTickSize(tokenId);
     
     // Calculate maker/taker amounts (USDC has 6 decimals)
     // For BUY: maker pays cost (shares * price), taker gives shares
     // For SELL: maker gives shares, taker pays cost
-    const rawPrice = Math.round(price / 0.01) * 0.01; // round to tick size 0.01
+    const rawPrice = Math.round(price / tickSize) * tickSize;
     let makerAmount, takerAmount;
     if (side === 'BUY') {
       const rawTakerAmt = size;

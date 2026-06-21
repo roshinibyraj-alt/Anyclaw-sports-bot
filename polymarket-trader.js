@@ -159,24 +159,45 @@ class PolymarketTrader {
     }
   }
 
-  // ── USDC balance via Polygon RPC (tries multiple endpoints) ──
+  // ── Get total available balance ──
+  // Polymarket v3: USDC can be in wallet OR deposited in Exchange contract.
+  // Check both and return whichever has value.
   async getBalance() {
     const USDC = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+    const EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
     const RPCS = [
       'https://rpc-mainnet.maticvigil.com',
       'https://rpc.ankr.com/polygon',
       'https://polygon-mainnet.g.alchemy.com/v2/demo',
       'https://polygon-rpc.com',
     ];
+    
     for (const rpcUrl of RPCS) {
       try {
         const provider = new ethers.JsonRpcProvider(rpcUrl, 137, { staticNetwork: true });
-        const contract = new ethers.Contract(USDC, [
+        
+        // 1. USDC in wallet
+        const usdcContract = new ethers.Contract(USDC, [
           'function balanceOf(address) view returns (uint256)',
           'function decimals() view returns (uint8)'
         ], provider);
-        const bal = await contract.balanceOf(this.address);
-        return Number(bal) / 1e6;
+        const walletBal = await usdcContract.balanceOf(this.address);
+        const walletUsdc = Number(walletBal) / 1e6;
+        
+        // 2. Balance deposited in Exchange contract (balanceOf)
+        const exchangeContract = new ethers.Contract(EXCHANGE, [
+          'function balanceOf(address) view returns (uint256)'
+        ], provider);
+        let exchangeBal = 0;
+        try {
+          const exBal = await exchangeContract.balanceOf(this.address);
+          exchangeBal = Number(exBal) / 1e6;
+        } catch(_) { /* exchange may not have balanceOf */ }
+        
+        // Return whichever is larger (wallet or deposited)
+        const total = walletUsdc + exchangeBal;
+        if (total > 0 || walletUsdc > 0 || exchangeBal > 0) return total;
+        return 0;
       } catch (_) {
         // try next RPC
       }

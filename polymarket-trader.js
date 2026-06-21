@@ -160,49 +160,44 @@ class PolymarketTrader {
   }
 
   // ── Get total available balance ──
-  // Polymarket v3: USDC can be in wallet OR deposited in Exchange contract.
-  // Check both and return whichever has value.
+  // Checks wallet USDC + Exchange contract deposit.
+  // Supports POLYGON_RPC_URL env var for custom RPC endpoints.
   async getBalance() {
     const USDC = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-    const EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
-    const RPCS = [
+    const EXCHANGE_CTF = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+    
+    const rpcEnv = process.env.POLYGON_RPC_URL;
+    const RPCS = [];
+    if (rpcEnv) RPCS.push(rpcEnv);
+    RPCS.push(
       'https://rpc-mainnet.maticvigil.com',
       'https://rpc.ankr.com/polygon',
       'https://polygon-mainnet.g.alchemy.com/v2/demo',
       'https://polygon-rpc.com',
-    ];
+    );
     
+    // Use raw fetch for RPC calls (avoids ethers provider overhead/timeouts)
     for (const rpcUrl of RPCS) {
       try {
-        const provider = new ethers.JsonRpcProvider(rpcUrl, 137, { staticNetwork: true });
-        
-        // 1. USDC in wallet
-        const usdcContract = new ethers.Contract(USDC, [
-          'function balanceOf(address) view returns (uint256)',
-          'function decimals() view returns (uint8)'
-        ], provider);
-        const walletBal = await usdcContract.balanceOf(this.address);
-        const walletUsdc = Number(walletBal) / 1e6;
-        
-        // 2. Balance deposited in Exchange contract (balanceOf)
-        const exchangeContract = new ethers.Contract(EXCHANGE, [
-          'function balanceOf(address) view returns (uint256)'
-        ], provider);
-        let exchangeBal = 0;
-        try {
-          const exBal = await exchangeContract.balanceOf(this.address);
-          exchangeBal = Number(exBal) / 1e6;
-        } catch(_) { /* exchange may not have balanceOf */ }
-        
-        // Return whichever is larger (wallet or deposited)
-        const total = walletUsdc + exchangeBal;
-        if (total > 0 || walletUsdc > 0 || exchangeBal > 0) return total;
-        return 0;
-      } catch (_) {
-        // try next RPC
-      }
+        const payload = [
+          {jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:USDC,data:'0x70a08231'+this.address.substring(2).padStart(64,'0')},'latest']},
+          {jsonrpc:'2.0',id:2,method:'eth_call',params:[{to:EXCHANGE_CTF,data:'0x27e235e3'+this.address.substring(2).padStart(64,'0')},'latest']}
+        ];
+        const resp = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) continue;
+        const results = await resp.json();
+        if (!Array.isArray(results)) continue;
+        const walletBal = results[0]?.result ? Number(BigInt(results[0].result)) / 1e6 : 0;
+        const exBal = results[1]?.result ? Number(BigInt(results[1].result)) / 1e6 : 0;
+        const total = walletBal + exBal;
+        return total;
+      } catch (_) { continue; }
     }
-    // All RPCs failed
     return 0;
   }
 
@@ -223,15 +218,23 @@ class PolymarketTrader {
       this.logFn('⚠️ Order too small: ' + size + ' shares (min ' + MIN_SHARES + ')');
       return null;
     }
+    if (!this.apiKey) {
+      this.logFn('❌ No API key - authenticate first');
+      return null;
+    }
+    
     const salt = Math.floor(Math.random() * Date.now()).toString();
     const feeRateBps = '0';
     const expiration = '0';
     const nonce = (++this.nonce).toString();
     const scale = Math.pow(10, COLLATERAL_DECIMALS);
     
+    // Calculate maker/taker amounts (USDC has 6 decimals)
+    // For BUY: maker pays cost (shares * price), taker gives shares
+    // For SELL: maker gives shares, taker pays cost
     let makerAmount, takerAmount;
     if (side === 'BUY') {
-      const rawCost = Math.floor(size * price * 1000000) / 1000000;
+      const rawCost = Math.floor(size * price * 100) / 100; // round to cents
       makerAmount = BigInt(Math.floor(rawCost * scale)).toString();
       takerAmount = BigInt(Math.floor(size * scale)).toString();
     } else {
@@ -239,18 +242,27 @@ class PolymarketTrader {
       takerAmount = BigInt(Math.floor(size * price * scale)).toString();
     }
 
+    // EIP-712 signing uses uint8 side (0=BUY, 1=SELL)
+    const eip712Side = side === 'BUY' ? 0 : 1;
     const orderData = {
       salt, maker: this.address, signer: this.address, taker: ZERO_ADDRESS,
       tokenId, makerAmount, takerAmount, expiration, nonce,
-      feeRateBps, side: side === 'BUY' ? 0 : 1, signatureType: SIGNATURE_TYPE,
+      feeRateBps, side: eip712Side, signatureType: SIGNATURE_TYPE,
     };
 
     const signature = await this.wallet.signTypedData(ORDER_DOMAIN_DATA, ORDER_TYPE, orderData);
-    // Per CLOB API spec: wrap in { order: ..., owner: ..., orderType: ..., deferExec: false }
+    
+    // CLOB API payload format (side as string, owner = API key)
     const orderPayload = {
-      order: { ...orderData, signature },
-      owner: this.address,
-      orderType: 'LIMIT',
+      order: {
+        salt, maker: this.address, signer: this.address, taker: ZERO_ADDRESS,
+        tokenId, makerAmount, takerAmount, expiration, nonce,
+        feeRateBps, side: side, // 'BUY' or 'SELL' string for API
+        signatureType: SIGNATURE_TYPE,
+        signature,
+      },
+      owner: this.apiKey,
+      orderType: 'GTC',
       deferExec: false,
     };
     const body = JSON.stringify(orderPayload);
@@ -262,9 +274,13 @@ class PolymarketTrader {
       body,
     });
     
-    if (result) this.logFn(`📤 ${side} ${size}sh@$${price.toFixed(4)} | ${result.id || result.order?.id || 'ok'}`);
-    else this.logFn(`❌ Order failed: ${side} ${size}sh@$${price.toFixed(4)}`);
-    return result;
+    if (result) {
+      const orderId = result.id || result.orderID || (result.order && result.order.id) || 'ok';
+      this.logFn(`📤 ${side} ${size}sh@$${price.toFixed(4)} id:${orderId.toString().substring(0,12)}`);
+      return result;
+    }
+    this.logFn(`❌ Order failed: ${side} ${size}sh@$${price.toFixed(4)}`);
+    return null;
   }
 
   // ── Cancel order ──

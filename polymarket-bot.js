@@ -541,7 +541,7 @@ async function start(emit, logEmit) {
   try {
     const realBalance = await Promise.race([
       trader.getBalance(),
-      new Promise(r => setTimeout(() => r(-1), 15000))
+      new Promise(r => setTimeout(() => r(-1), 8000))
     ]);
     if (realBalance > 0) {
       balance = realBalance;

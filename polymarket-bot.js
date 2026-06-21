@@ -564,17 +564,6 @@ function buildSnapshot() {
   };
 }
 
-async function tick() {
-  try {
-    tickCount++;
-    if (discoveryCount === 0) { await discoverMarkets(); await fetchClob(); }
-    else if (tickCount % 15 === 0) await discoverMarkets();
-    await fetchClob();
-    strategyTick();
-    saveState();
-    emitFn('snapshot', buildSnapshot());
-  } catch (e) { logFn(`⚠️ ${e.message}`); }
-}
 
 async function tick() {
   try {
@@ -599,12 +588,23 @@ async function start(emit, logEmit) {
       const authed = await trader.authenticate();
       if (authed) {
         logFn('✅ Real trading mode ACTIVE');
-        const realBalance = await trader.getBalance();
-        if (realBalance > 0) {
-          balance = realBalance;
-          initialEquity = realBalance;
-          peakEquity = realBalance;
-          logFn('💰 Real balance loaded: $' + fl2(realBalance));
+        // Try to fetch on-chain USDC balance (non-blocking with timeout)
+        // If RPC fails, keep using saved balance from state.json
+        try {
+          const realBalance = await Promise.race([
+            trader.getBalance(),
+            new Promise(r => setTimeout(() => r(-1), 8000))
+          ]);
+          if (realBalance > 0) {
+            balance = realBalance;
+            initialEquity = realBalance;
+            peakEquity = realBalance;
+            logFn('💰 On-chain balance: $' + fl2(realBalance));
+          } else {
+            logFn('💰 Using saved balance: $' + fl2(balance) + ' (RPC timeout)');
+          }
+        } catch(e) {
+          logFn('💰 Using saved balance: $' + fl2(balance) + ' (RPC fail)');
         }
       } else {
         logFn('⚠️ Auth failed, running in SIMULATION mode');

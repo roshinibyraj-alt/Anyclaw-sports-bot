@@ -255,9 +255,11 @@ class PolymarketTrader {
     const signature = await this.wallet.signTypedData(ORDER_DOMAIN_DATA, ORDER_TYPE, orderData);
     
     // CLOB API payload format (side as string, owner = API key)
+    // Java code sends salt as LONG (number), not string
     const orderPayload = {
       order: {
-        salt, maker: this.address, signer: this.address, taker: ZERO_ADDRESS,
+        salt: Number(salt), // must be number, not string
+        maker: this.address, signer: this.address, taker: ZERO_ADDRESS,
         tokenId, makerAmount, takerAmount, expiration, nonce,
         feeRateBps, side: side, // 'BUY' or 'SELL' string for API
         signatureType: SIGNATURE_TYPE,

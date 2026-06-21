@@ -502,7 +502,7 @@ function buildSnapshot() {
     discoveryCount, connected: true, timestamp: now,
     realTrading: true,
     note: `LIVE ONLY | BTC 15m | CLOB scalper | ${Object.keys(pendingOrders).length} pending orders`,
-  commitVersion: (() => { try { return require('child_process').execSync('git log -1 --format=%h',{encoding:'utf8',timeout:2000}).trim(); } catch(_) { return '?'; } })(),
+  commitVersion: process.env.RAILWAY_GIT_COMMIT || process.env.GIT_COMMIT || 'live',
   };
 }
 
@@ -529,13 +529,7 @@ async function tick() {
 
 async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
-  // Log current version for deployment verification
-  try {
-    const pkg = require('./package.json');
-    const { execSync } = require('child_process');
-    const hash = execSync('git log -1 --format=%h', { encoding: 'utf8', timeout: 3000 }).trim();
-    logFn('📦 v' + (pkg.version || '?') + ' | commit: ' + hash);
-  } catch(_) { logFn('📦 v10 (commit unknown)'); }
+  logFn('📦 v10 | ' + (process.env.GIT_COMMIT || 'deploy-' + Date.now().toString(36)));
   
   trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
   trader.setLogFn(logFn);

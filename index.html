@@ -110,7 +110,7 @@ function render(d){
   if(modeEl)modeEl.textContent='🔴 LIVE';
 
   // eq,dd cls
-  var eq=d.equity||d.balance||0,initEq=d.initialEquity||10000,pnl=eq-initEq,pnlPct=initEq?((pnl/initEq)*100).toFixed(1):'0';
+  var eq=typeof d.equity==='number'?d.equity:(typeof d.balance==='number'?d.balance:0),initEq=typeof d.initialEquity==='number'?d.initialEquity:10000,pnl=eq-initEq,pnlPct=initEq>0?((pnl/initEq)*100).toFixed(1):'0.0';
   var dd=d.drawdown||0,ddCls=dd>5?'r':(dd>2?'y':'g');
   
   // Header

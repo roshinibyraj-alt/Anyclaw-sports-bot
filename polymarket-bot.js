@@ -532,7 +532,7 @@ async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
   logFn('📦 v10 | ' + (process.env.GIT_COMMIT || 'deploy-' + Date.now().toString(36)));
   
-  trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
+  trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY, process.env.FUNDER_ADDRESS);
   trader.setLogFn(logFn);
   logFn('🔑 Authenticating with Polymarket CLOB...');
   const authed = await trader.authenticate();

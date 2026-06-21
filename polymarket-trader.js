@@ -9,7 +9,7 @@ const CLOB_API = 'https://clob.polymarket.com';
 const COLLATERAL_DECIMALS = 6;
 const MIN_SHARES = 5; // Polymarket CLOB minimum order size
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const SIGNATURE_TYPE = 0;
+const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || '0', 10);
 
 const AUTH_DOMAIN = {
   EIP712Domain: [
@@ -70,12 +70,16 @@ function _l2Sign(secretB64, ts, method, path, body) {
 }
 
 class PolymarketTrader {
-  constructor(privateKey) {
+  constructor(privateKey, funderAddress) {
     this.wallet = new ethers.Wallet(privateKey);
     this.address = this.wallet.address;
     this.signerAddress = this.address;
+    this.funderAddress = funderAddress || this.address;
     this._feeCache = null;
     this.logFn = () => {};
+    if (funderAddress && funderAddress.toLowerCase() !== this.address.toLowerCase()) {
+      console.log(`🔐 Proxy wallet mode: signer=${this.address} maker=${this.funderAddress} sigType=${SIGNATURE_TYPE}`);
+    }
     this.apiKey = null;
     this.apiSecret = null;
     this.apiPassphrase = null;
@@ -270,8 +274,9 @@ class PolymarketTrader {
 
     // EIP-712 signing uses uint8 side (0=BUY, 1=SELL)
     const eip712Side = side === 'BUY' ? 0 : 1;
+    // maker = funderAddress (proxy wallet that holds funds), signer = EOA that signs
     const orderData = {
-      salt, maker: this.address, signer: this.signerAddress, taker: ZERO_ADDRESS,
+      salt, maker: this.funderAddress, signer: this.signerAddress, taker: ZERO_ADDRESS,
       tokenId, makerAmount, takerAmount, expiration, nonce,
       feeRateBps, side: eip712Side, signatureType: SIGNATURE_TYPE,
     };
@@ -282,7 +287,7 @@ class PolymarketTrader {
     const orderPayload = {
       order: {
         salt: Number(salt),
-        maker: this.address, signer: this.signerAddress, taker: ZERO_ADDRESS,
+        maker: this.funderAddress, signer: this.signerAddress, taker: ZERO_ADDRESS,
         tokenId, makerAmount, takerAmount, expiration, nonce,
         feeRateBps, side: side,
         signatureType: SIGNATURE_TYPE,

@@ -102,7 +102,13 @@ class PolymarketTrader {
     try {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 15000);
-      const r = await fetch(url, { signal: ac.signal, ...opts });
+      const defaultHeaders = {
+        'User-Agent': '@polymarket/clob-client',
+        'Accept': '*/*',
+        'Connection': 'keep-alive',
+      };
+      const mergedHeaders = Object.assign({}, defaultHeaders, opts.headers || {});
+      const r = await fetch(url, { signal: ac.signal, ...opts, headers: mergedHeaders });
       clearTimeout(timer);
       if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`HTTP ${r.status}: ${t.substring(0,200)}`); }
       return await r.json();

@@ -14,9 +14,10 @@ const PUSD_TOKEN = '0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb';
 const USDC_TOKEN_OLD = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const USDC_TOKEN_NEW = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
 const BYTES32_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000';
-// Default to Poly Proxy (1) when FUNDER_ADDRESS is set, else EOA (0)
+// Default to signature type 3 (MetaMask/EOA typed-data) — this is where Polymarket
+// stores deposited funds for MetaMask wallets. Override via SIGNATURE_TYPE env var.
 const hasProxyWallet = !!process.env.FUNDER_ADDRESS;
-const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || (hasProxyWallet ? '1' : '0'), 10);
+const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || (hasProxyWallet ? '1' : '3'), 10);
 
 const AUTH_DOMAIN = {
   EIP712Domain: [

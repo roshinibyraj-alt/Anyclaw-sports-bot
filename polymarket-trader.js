@@ -4,14 +4,16 @@ const ethers = require('ethers');
 const crypto = require('crypto');
 
 const CHAIN_ID = 137;
-const EXCHANGE_CONTRACT = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+// V2 protocol: new exchange contracts (ts-sdk / @polymarket/client)
+const STANDARD_EXCHANGE = '0xE111180000d2663C0091e4f400237545B87B996B';
+const NEG_RISK_EXCHANGE  = '0xe2222d279d744050d28e00520010520000310F59';
 const CLOB_API = 'https://clob.polymarket.com';
 const COLLATERAL_DECIMALS = 6;
-const MIN_SHARES = 5; // Polymarket CLOB minimum order size
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const MIN_SHARES = 5;
 const PUSD_TOKEN = '0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb';
 const USDC_TOKEN_OLD = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const USDC_TOKEN_NEW = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+const BYTES32_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000';
 // Default to Poly Proxy (1) when FUNDER_ADDRESS is set, else EOA (0)
 const hasProxyWallet = !!process.env.FUNDER_ADDRESS;
 const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || (hasProxyWallet ? '1' : '0'), 10);
@@ -33,29 +35,29 @@ const AUTH_TYPE = {
   ]
 };
 
-const ORDER_DOMAIN = {
-  EIP712Domain: [
-    { name: 'name', type: 'string' },
-    { name: 'version', type: 'string' },
-    { name: 'chainId', type: 'uint256' },
-    { name: 'verifyingContract', type: 'address' },
-  ]
-};
-const ORDER_DOMAIN_DATA = { name: 'Polymarket CTF Exchange', version: '1', chainId: CHAIN_ID, verifyingContract: EXCHANGE_CONTRACT };
+// V2 EIP-712 domain — version "2", verifyingContract is market-dependent
+function getOrderDomainData(negRisk) {
+  return {
+    name: 'Polymarket CTF Exchange',
+    version: '2',
+    chainId: CHAIN_ID,
+    verifyingContract: negRisk ? NEG_RISK_EXCHANGE : STANDARD_EXCHANGE,
+  };
+}
+// V2 Order struct — taker/expiration/nonce/feeRateBps removed; timestamp/metadata/builder added
 const ORDER_TYPE = {
   Order: [
-    { name: 'salt', type: 'uint256' },
-    { name: 'maker', type: 'address' },
-    { name: 'signer', type: 'address' },
-    { name: 'taker', type: 'address' },
-    { name: 'tokenId', type: 'uint256' },
-    { name: 'makerAmount', type: 'uint256' },
-    { name: 'takerAmount', type: 'uint256' },
-    { name: 'expiration', type: 'uint256' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'feeRateBps', type: 'uint256' },
-    { name: 'side', type: 'uint8' },
-    { name: 'signatureType', type: 'uint8' },
+    { name: 'salt',          type: 'uint256' },
+    { name: 'maker',         type: 'address' },
+    { name: 'signer',        type: 'address' },
+    { name: 'tokenId',       type: 'uint256' },
+    { name: 'makerAmount',   type: 'uint256' },
+    { name: 'takerAmount',   type: 'uint256' },
+    { name: 'side',          type: 'uint8'   },
+    { name: 'signatureType', type: 'uint8'   },
+    { name: 'timestamp',     type: 'uint256' },
+    { name: 'metadata',      type: 'bytes32' },
+    { name: 'builder',       type: 'bytes32' },
   ]
 };
 
@@ -82,6 +84,7 @@ class PolymarketTrader {
     this.funderAddress = funderAddress || this.address;
     this._feeCache = {};
     this._tickSizeCache = {};
+    this._negRiskCache = {};
     this.logFn = () => {};
 
     if (funderAddress && funderAddress.toLowerCase() !== this.address.toLowerCase()) {
@@ -179,6 +182,8 @@ class PolymarketTrader {
         this.apiSecret = result.secret;
         this.apiPassphrase = result.passphrase;
         this.logFn('✅ Authenticated: ' + this.address.substring(0,10) + '...');
+        // Check what the CLOB sees for this wallet's balance + allowance
+        this._checkBalanceAllowance().catch(() => {});
         return true;
       }
       this.logFn('❌ Auth failed: ' + JSON.stringify(result));
@@ -189,13 +194,29 @@ class PolymarketTrader {
     }
   }
 
+  // ── Check CLOB balance-allowance (what the exchange sees for this wallet) ──
+  async _checkBalanceAllowance() {
+    try {
+      const endpoint = '/balance-allowance';
+      const qs = `?asset_type=COLLATERAL&signature_type=${SIGNATURE_TYPE}`;
+      const headers = this.l2Headers('GET', endpoint);
+      const allHeaders = { ...this.defaultHeaders(), ...headers };
+      const r = await fetch(`${CLOB_API}${endpoint}${qs}`, { headers: allHeaders, signal: AbortSignal.timeout(10000) });
+      const data = await r.json();
+      this.logFn(`💳 CLOB balance-allowance: ${JSON.stringify(data)}`);
+    } catch (e) {
+      this.logFn(`⚠️ balance-allowance check failed: ${e.message}`);
+    }
+  }
+
   // ── Get total available balance ──
   // Checks USDC + PUSD (Polymarket USD) + CTF exchange deposit.
   // In proxy wallet mode, all checks are against the funder (Deposit Wallet).
   // Supports POLYGON_RPC_URL env var for custom RPC endpoints.
   async getBalance() {
-    const EXCHANGE_CTF = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
     const checkAddress = this.funderAddress;
+    // getUserContext(address) selector 0x27e235e3 — reads deposited collateral balance from exchange
+    const balSlot = '0x27e235e3' + checkAddress.substring(2).padStart(64, '0');
     
     const rpcEnv = process.env.POLYGON_RPC_URL;
     const RPCS = [];
@@ -212,10 +233,14 @@ class PolymarketTrader {
     for (const rpcUrl of RPCS) {
       try {
         const payload = [
+          // Wallet USDC balances
           {jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:USDC_TOKEN_OLD,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
           {jsonrpc:'2.0',id:2,method:'eth_call',params:[{to:USDC_TOKEN_NEW,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
-          {jsonrpc:'2.0',id:3,method:'eth_call',params:[{to:PUSD_TOKEN,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
-          {jsonrpc:'2.0',id:4,method:'eth_call',params:[{to:EXCHANGE_CTF,data:'0x27e235e3'+checkAddress.substring(2).padStart(64,'0')},'latest']}
+          {jsonrpc:'2.0',id:3,method:'eth_call',params:[{to:PUSD_TOKEN,   data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
+          // NEW V2 standard exchange deposit (active contract)
+          {jsonrpc:'2.0',id:4,method:'eth_call',params:[{to:STANDARD_EXCHANGE, data:balSlot},'latest']},
+          // Old CTF exchange deposit (kept for legacy, likely 0)
+          {jsonrpc:'2.0',id:5,method:'eth_call',params:[{to:'0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E', data:balSlot},'latest']},
         ];
         const resp = await fetch(rpcUrl, {
           method: 'POST',
@@ -226,11 +251,14 @@ class PolymarketTrader {
         if (!resp.ok) continue;
         const results = await resp.json();
         if (!Array.isArray(results)) continue;
-        const usdcOld = results[0]?.result ? Number(BigInt(results[0].result)) / 1e6 : 0;
-        const usdcNew = results[1]?.result ? Number(BigInt(results[1].result)) / 1e6 : 0;
-        const pusdBal = results[2]?.result ? Number(BigInt(results[2].result)) / 1e6 : 0;
-        const exBal = results[3]?.result ? Number(BigInt(results[3].result)) / 1e6 : 0;
-        const total = usdcOld + usdcNew + pusdBal + exBal;
+        const parse = (r) => r?.result && r.result !== '0x' ? Number(BigInt(r.result)) / 1e6 : 0;
+        const usdcOld = parse(results[0]);
+        const usdcNew = parse(results[1]);
+        const pusdBal = parse(results[2]);
+        const exNew   = parse(results[3]); // V2 exchange deposit
+        const exOld   = parse(results[4]); // old exchange (legacy)
+        const total = usdcOld + usdcNew + pusdBal + exNew + exOld;
+        this.logFn(`💳 wallet USDC=$${(usdcOld+usdcNew).toFixed(2)} PUSD=$${pusdBal.toFixed(2)} exV2=$${exNew.toFixed(2)} exOld=$${exOld.toFixed(2)}`);
         return total;
       } catch (_) { continue; }
     }
@@ -270,6 +298,19 @@ class PolymarketTrader {
     return 0.01; // fallback default
   }
 
+  // ── Fetch neg_risk flag for a token (cached) ──
+  async getNegRisk(tokenId) {
+    const cached = this._negRiskCache[tokenId];
+    if (cached && Date.now() - cached.ts < 600000) return cached.negRisk;
+    try {
+      const data = await this.fetch(`${CLOB_API}/markets/${tokenId}`);
+      const negRisk = !!(data && data.neg_risk);
+      this._negRiskCache[tokenId] = { negRisk, ts: Date.now() };
+      return negRisk;
+    } catch (_) { /* ignore */ }
+    return false; // BTC 15m markets are always non-neg-risk
+  }
+
   // ── Get midpoint price (public, no auth) ──
   async getMidpoint(tokenId) {
     const data = await this.fetch(`${CLOB_API}/midpoint?token_id=${tokenId}`);
@@ -291,96 +332,101 @@ class PolymarketTrader {
       this.logFn('❌ No API key - authenticate first');
       return null;
     }
-    
-    // Salt matches official client: Math.round(Math.random() * Date.now())
-    const salt = Math.round(Math.random() * Date.now()).toString();
-    const expiration = '0';
-    // nonce=0: official client default; used only for onchain cancellations, not API ordering
-    const nonce = '0';
-    const scale = Math.pow(10, COLLATERAL_DECIMALS);
-    // feeRateBps: MUST match the market's actual fee rate (server validates this against signed order)
-    // Official client always sends as a string. BTC 15m markets use 1000 bps.
-    const [rawFeeRate, tickSize] = await Promise.all([
-      this.getFeeRate(tokenId),
+
+    // Fetch market context: tick size + neg_risk (determines which exchange contract to use)
+    const [tickSize, negRisk] = await Promise.all([
       this.getTickSize(tokenId),
+      this.getNegRisk(tokenId),
     ]);
-    const feeRateBps = String(rawFeeRate);
-    
-    // Calculate maker/taker amounts (USDC has 6 decimals)
-    // For BUY: maker pays cost (shares * price), taker gives shares
-    // For SELL: maker gives shares, taker pays cost
+    const domainData = getOrderDomainData(negRisk);
+    const scale = Math.pow(10, COLLATERAL_DECIMALS);
     const rawPrice = Math.round(price / tickSize) * tickSize;
+
+    // Amounts — V2 has no feeRateBps in the struct
     let makerAmount, takerAmount;
     if (side === 'BUY') {
-      const rawTakerAmt = size;
-      const rawMakerAmt_full = rawTakerAmt * rawPrice;
-      const rawMakerAmt = Math.floor(rawMakerAmt_full * 100) / 100;
-      makerAmount = BigInt(Math.floor(rawMakerAmt * scale)).toString();
-      takerAmount = BigInt(Math.floor(rawTakerAmt * scale)).toString();
+      const takerAmt = size;
+      let makerAmt = takerAmt * rawPrice;
+      if ((makerAmt * 1e5) % 1 !== 0) makerAmt = Math.floor(makerAmt * 1e5 + 0.5) / 1e5;
+      makerAmount = BigInt(Math.floor(makerAmt * scale)).toString();
+      takerAmount = BigInt(Math.floor(takerAmt * scale)).toString();
     } else {
-      makerAmount = BigInt(Math.floor(size * scale)).toString();
-      takerAmount = BigInt(Math.floor(size * rawPrice * scale)).toString();
+      const makerAmt = size;
+      let takerAmt = makerAmt * rawPrice;
+      if ((takerAmt * 1e5) % 1 !== 0) takerAmt = Math.floor(takerAmt * 1e5 + 0.5) / 1e5;
+      makerAmount = BigInt(Math.floor(makerAmt * scale)).toString();
+      takerAmount = BigInt(Math.floor(takerAmt * scale)).toString();
     }
 
-    // EIP-712 signing uses uint8 side (0=BUY, 1=SELL)
+    // Salt: random 53-bit integer (capped so JSON number round-trip is lossless)
+    const saltBytes = crypto.randomBytes(8);
+    const saltBig = (BigInt('0x' + saltBytes.toString('hex'))) & ((1n << 53n) - 1n);
+    const salt = saltBig.toString();
+
+    // timestamp = Date.now() in milliseconds (as bigint for EIP712, as string for POST)
+    const timestamp = Date.now().toString();
     const eip712Side = side === 'BUY' ? 0 : 1;
-    // maker = funderAddress (proxy wallet that holds funds), signer = EOA that signs
+
+    // V2 EIP-712 order data — new struct
     const orderData = {
-      salt, maker: this.funderAddress, signer: this.signerAddress, taker: ZERO_ADDRESS,
-      tokenId, makerAmount, takerAmount, expiration, nonce,
-      feeRateBps, side: eip712Side, signatureType: SIGNATURE_TYPE,
+      salt:          saltBig,
+      maker:         this.funderAddress,
+      signer:        this.signerAddress,
+      tokenId:       BigInt(tokenId),
+      makerAmount:   BigInt(makerAmount),
+      takerAmount:   BigInt(takerAmount),
+      side:          eip712Side,
+      signatureType: SIGNATURE_TYPE,
+      timestamp:     BigInt(timestamp),
+      metadata:      BYTES32_ZERO,
+      builder:       BYTES32_ZERO,
     };
 
-    const signature = await this.wallet.signTypedData(ORDER_DOMAIN_DATA, ORDER_TYPE, orderData);
+    const signature = await this.wallet.signTypedData(domainData, ORDER_TYPE, orderData);
 
-    // Verify signature locally before sending
-    const recovered = ethers.verifyTypedData(ORDER_DOMAIN_DATA, ORDER_TYPE, orderData, signature);
+    // Verify locally
+    const recovered = ethers.verifyTypedData(domainData, ORDER_TYPE, orderData, signature);
     const sigValid = recovered.toLowerCase() === this.signerAddress.toLowerCase();
-    this.logFn(`🔏 sig=${sigValid?'✅':'❌'} maker=${this.funderAddress.substring(0,10)} signer=${this.signerAddress.substring(0,10)} sigType=${SIGNATURE_TYPE}`);
-    this.logFn(`🔏 tokenId=${tokenId.substring(0,20)}... side=${side} price=${rawPrice} maker$=${makerAmount} taker#=${takerAmount} fee=${feeRateBps}`);
+    this.logFn(`🔏 V2 sig=${sigValid?'✅':'❌'} exchange=${domainData.verifyingContract.substring(0,10)} negRisk=${negRisk}`);
+    this.logFn(`🔏 salt=${salt} ts=${timestamp} maker$=${makerAmount} taker#=${takerAmount}`);
 
-    // CLOB API payload — matches official @polymarket/clob-client orderToJson exactly
+    // V2 POST body — matches ts-sdk createSendOrderPayload exactly
     const orderPayload = {
       deferExec: false,
       order: {
-        salt: Number.parseInt(salt, 10),
-        maker: this.funderAddress, signer: this.signerAddress, taker: ZERO_ADDRESS,
-        tokenId, makerAmount, takerAmount,
-        side: side,
-        expiration, nonce, feeRateBps,
-        signatureType: SIGNATURE_TYPE,
+        builder:       BYTES32_ZERO,
+        expiration:    '0',
+        maker:         this.funderAddress,
+        makerAmount,
+        metadata:      BYTES32_ZERO,
+        salt:          Number.parseInt(salt, 10),
+        side,
         signature,
+        signatureType: SIGNATURE_TYPE,
+        signer:        this.signerAddress,
+        takerAmount,
+        timestamp,
+        tokenId,
       },
-      owner: this.apiKey,
       orderType: 'GTC',
-      postOnly: false,
+      owner: this.apiKey,
     };
     const body = JSON.stringify(orderPayload);
-    this.logFn(`📦 POST /order body=${body.replace(signature, sig => sig.substring(0,20)+'...').substring(0,300)}`);
+    this.logFn(`📦 POST /order: ${body.replace(signature, s => s.substring(0,16)+'...').substring(0,280)}`);
 
     const headers = this.l2Headers('POST', '/order', body);
-    let rawResult;
-    try {
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 15000);
-      const allHeaders = { 'Content-Type': 'application/json', ...this.defaultHeaders(), ...headers };
-      const r = await fetch(`${CLOB_API}/order`, { signal: ac.signal, method: 'POST', headers: allHeaders, body });
-      clearTimeout(timer);
-      const text = await r.text();
-      this.logFn(`📨 ORDER response ${r.status}: ${text.substring(0,200)}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.substring(0,200)}`);
-      rawResult = JSON.parse(text);
-    } catch (e) {
-      throw e;
-    }
-    
-    if (rawResult) {
-      const orderId = rawResult.id || rawResult.orderID || (rawResult.order && rawResult.order.id) || 'ok';
-      this.logFn(`📤 ${side} ${size}sh@$${rawPrice.toFixed(2)} id:${orderId.toString().substring(0,12)}`);
-      return rawResult;
-    }
-    this.logFn(`❌ Order failed: ${side} ${size}sh@$${rawPrice.toFixed(2)}`);
-    return null;
+    const allHeaders = { 'Content-Type': 'application/json', ...this.defaultHeaders(), ...headers };
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15000);
+    const r = await fetch(`${CLOB_API}/order`, { signal: ac.signal, method: 'POST', headers: allHeaders, body });
+    clearTimeout(timer);
+    const text = await r.text();
+    this.logFn(`📨 ORDER ${r.status}: ${text.substring(0, 200)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.substring(0, 200)}`);
+    const rawResult = JSON.parse(text);
+    const orderId = rawResult.orderID || rawResult.id || 'ok';
+    this.logFn(`📤 ${side} ${size}sh@$${rawPrice.toFixed(3)} id:${orderId.toString().substring(0,12)}`);
+    return rawResult;
   }
 
   // ── Cancel order ──

@@ -342,21 +342,25 @@ class PolymarketTrader {
   async getBalanceAllowance() {
     if (!this.apiKey) return -1;
     try {
-      const headers = this.l2Headers('GET', '/balance-allowance');
-      const result = await this.fetch(`${CLOB_API}/balance-allowance`, { headers });
+      // HMAC signs the base path WITHOUT query params (official client behaviour)
+      const basePath = '/balance-allowance';
+      const qs = `asset_type=COLLATERAL&signature_type=${SIGNATURE_TYPE}`;
+      const headers = this.l2Headers('GET', basePath);
+      const result = await this.fetch(`${CLOB_API}${basePath}?${qs}`, { headers });
       if (result && typeof result.balance !== 'undefined') {
         const bal = Number(result.balance) / 1e6;
         this.logFn(`💰 CLOB balance: $${bal.toFixed(2)}`);
         return bal;
       }
-      if (result && typeof result.allowance !== 'undefined' && typeof result.balance === 'undefined') {
+      if (result && typeof result.allowance !== 'undefined') {
         const bal = Number(result.allowance) / 1e6;
         this.logFn(`💰 CLOB allowance: $${bal.toFixed(2)}`);
         return bal;
       }
+      this.logFn(`⚠️ Balance-allowance response unexpected: ${JSON.stringify(result).substring(0,80)}`);
       return -1;
     } catch(e) {
-      this.logFn(`⚠️ Balance-allowance error: ${e.message.substring(0,60)}`);
+      this.logFn(`⚠️ Balance-allowance error: ${e.message.substring(0,80)}`);
       return -1;
     }
   }

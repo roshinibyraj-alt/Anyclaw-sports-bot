@@ -7,6 +7,7 @@ const CHAIN_ID = 137;
 const EXCHANGE_CONTRACT = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
 const CLOB_API = 'https://clob.polymarket.com';
 const COLLATERAL_DECIMALS = 6;
+const MIN_SHARES = 5; // Polymarket CLOB minimum order size
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const SIGNATURE_TYPE = 0;
 
@@ -197,6 +198,10 @@ class PolymarketTrader {
 
   // ── Place order ──
   async placeOrder(tokenId, side, price, size) {
+    if (size < MIN_SHARES) {
+      this.logFn('⚠️ Order too small: ' + size + ' shares (min ' + MIN_SHARES + ')');
+      return null;
+    }
     const salt = Math.floor(Math.random() * Date.now()).toString();
     const feeRateBps = '0';
     const expiration = '0';

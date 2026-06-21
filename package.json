@@ -8,6 +8,7 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "ethers": "^6.17.0",
     "express": "^4.21.0",
     "socket.io": "^4.7.0"
   }

@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const PolymarketTrader = require('./polymarket-trader');
 
 const INITIAL_CAPITAL = 10000;
 const GAMMA = 'https://gamma-api.polymarket.com';
@@ -12,7 +13,9 @@ const STATE_VERSION = 10;
 const SCALP_SIZE = 10;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
-const FEE_RATE = 0; // 0% maker fee (limit orders)
+const FEE_RATE = 0;
+const REAL_TRADING = !!process.env.POLYMARKET_PRIVATE_KEY;
+let trader = null;
 
 let balance = INITIAL_CAPITAL;
 let totalRealizedPnl = 0;

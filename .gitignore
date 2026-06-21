@@ -1,7 +1,4 @@
 node_modules/
 state.json
-.cache/
-polybot/.cache/
-polybot/logs/
-*.bak
-package-lock.json
+.env
+*.backup*

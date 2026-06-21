@@ -198,17 +198,12 @@ class PolymarketTrader {
   async _checkBalanceAllowance() {
     try {
       const endpoint = '/balance-allowance';
-      const qs = `?asset_type=collateral&signature_type=0&asset_address=${USDC_TOKEN_OLD}`;
+      const qs = `?asset_type=COLLATERAL&signature_type=${SIGNATURE_TYPE}`;
       const headers = this.l2Headers('GET', endpoint);
       const allHeaders = { ...this.defaultHeaders(), ...headers };
       const r = await fetch(`${CLOB_API}${endpoint}${qs}`, { headers: allHeaders, signal: AbortSignal.timeout(10000) });
       const data = await r.json();
-      this.logFn(`💳 CLOB collateral balance-allowance: ${JSON.stringify(data)}`);
-      // Also check NEW usdc
-      const qs2 = `?asset_type=collateral&signature_type=0&asset_address=${USDC_TOKEN_NEW}`;
-      const r2 = await fetch(`${CLOB_API}${endpoint}${qs2}`, { headers: allHeaders, signal: AbortSignal.timeout(10000) });
-      const data2 = await r2.json();
-      this.logFn(`💳 CLOB new-USDC balance-allowance: ${JSON.stringify(data2)}`);
+      this.logFn(`💳 CLOB balance-allowance: ${JSON.stringify(data)}`);
     } catch (e) {
       this.logFn(`⚠️ balance-allowance check failed: ${e.message}`);
     }
@@ -219,8 +214,9 @@ class PolymarketTrader {
   // In proxy wallet mode, all checks are against the funder (Deposit Wallet).
   // Supports POLYGON_RPC_URL env var for custom RPC endpoints.
   async getBalance() {
-    const EXCHANGE_CTF = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
     const checkAddress = this.funderAddress;
+    // getUserContext(address) selector 0x27e235e3 — reads deposited collateral balance from exchange
+    const balSlot = '0x27e235e3' + checkAddress.substring(2).padStart(64, '0');
     
     const rpcEnv = process.env.POLYGON_RPC_URL;
     const RPCS = [];
@@ -237,10 +233,14 @@ class PolymarketTrader {
     for (const rpcUrl of RPCS) {
       try {
         const payload = [
+          // Wallet USDC balances
           {jsonrpc:'2.0',id:1,method:'eth_call',params:[{to:USDC_TOKEN_OLD,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
           {jsonrpc:'2.0',id:2,method:'eth_call',params:[{to:USDC_TOKEN_NEW,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
-          {jsonrpc:'2.0',id:3,method:'eth_call',params:[{to:PUSD_TOKEN,data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
-          {jsonrpc:'2.0',id:4,method:'eth_call',params:[{to:EXCHANGE_CTF,data:'0x27e235e3'+checkAddress.substring(2).padStart(64,'0')},'latest']}
+          {jsonrpc:'2.0',id:3,method:'eth_call',params:[{to:PUSD_TOKEN,   data:'0x70a08231'+checkAddress.substring(2).padStart(64,'0')},'latest']},
+          // NEW V2 standard exchange deposit (active contract)
+          {jsonrpc:'2.0',id:4,method:'eth_call',params:[{to:STANDARD_EXCHANGE, data:balSlot},'latest']},
+          // Old CTF exchange deposit (kept for legacy, likely 0)
+          {jsonrpc:'2.0',id:5,method:'eth_call',params:[{to:'0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E', data:balSlot},'latest']},
         ];
         const resp = await fetch(rpcUrl, {
           method: 'POST',
@@ -251,11 +251,14 @@ class PolymarketTrader {
         if (!resp.ok) continue;
         const results = await resp.json();
         if (!Array.isArray(results)) continue;
-        const usdcOld = results[0]?.result ? Number(BigInt(results[0].result)) / 1e6 : 0;
-        const usdcNew = results[1]?.result ? Number(BigInt(results[1].result)) / 1e6 : 0;
-        const pusdBal = results[2]?.result ? Number(BigInt(results[2].result)) / 1e6 : 0;
-        const exBal = results[3]?.result ? Number(BigInt(results[3].result)) / 1e6 : 0;
-        const total = usdcOld + usdcNew + pusdBal + exBal;
+        const parse = (r) => r?.result && r.result !== '0x' ? Number(BigInt(r.result)) / 1e6 : 0;
+        const usdcOld = parse(results[0]);
+        const usdcNew = parse(results[1]);
+        const pusdBal = parse(results[2]);
+        const exNew   = parse(results[3]); // V2 exchange deposit
+        const exOld   = parse(results[4]); // old exchange (legacy)
+        const total = usdcOld + usdcNew + pusdBal + exNew + exOld;
+        this.logFn(`💳 wallet USDC=$${(usdcOld+usdcNew).toFixed(2)} PUSD=$${pusdBal.toFixed(2)} exV2=$${exNew.toFixed(2)} exOld=$${exOld.toFixed(2)}`);
         return total;
       } catch (_) { continue; }
     }

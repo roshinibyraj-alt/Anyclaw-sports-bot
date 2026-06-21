@@ -1,10 +1,13 @@
 'use strict';
 
-// ── Complete-Set Arbitrage Bot ──────────────────────────────────────────────
-// Strategy: ent0n29/polybot GabagoolDirectionalEngine (spec-compliant)
-// Edge = 1.0 − (bestBid_UP + bestBid_DN) ≥ 0.01 → buy both legs as maker
-// Redemption: sell both sides at ask when complete sets accumulate
-// KILL_SWITCH: set env var KILL_SWITCH=true to pause trading
+// ── Complete-Set Arbitrage Bot v2 ───────────────────────────────────────────
+// Strategy: buy UP + DN as maker when combined bid < $0.99 → settle at ask (~$1)
+// KILL_SWITCH: env var KILL_SWITCH=true to pause trading (Railway env var)
+// Key safety rules:
+//   • Balance deducted immediately on BUY placement (GTC locks funds on CLOB)
+//   • Orders cancelled (balance refunded) when edge disappears
+//   • MAX_POSITION_PER_LEG hard cap per side
+//   • MAX_IMBALANCE pauses excess side when one leg runs ahead
 
 const PolymarketTrader = require('./polymarket-trader');
 
@@ -16,25 +19,25 @@ const MIN_EDGE               = 0.01;
 const TICK_SIZE              = 0.01;
 const IMPROVE_TICKS          = 1;
 const MAX_SKEW_TICKS         = 1;
-const SKEW_SHARES_FOR_MAX    = 200;
-const FAST_TOPUP_MIN_IMB     = 10;
-const FAST_TOPUP_MIN_SECS    = 3;
-const FAST_TOPUP_MAX_SECS    = 120;
+const SKEW_SHARES_FOR_MAX    = 100;
+const MAX_POSITION_PER_LEG   = 45;   // hard cap per side (shares)
+const MAX_IMBALANCE          = 18;   // pause excess side beyond this
+const FAST_TOPUP_MIN_IMB     = 9;    // min imbalance to trigger fast top-up
 const FAST_TOPUP_COOLDOWN_MS = 15000;
 const ENDGAME_SECS           = 60;
-const ENDGAME_MIN_IMB        = 10;
 const TAKER_MAX_SPREAD       = 0.02;
-const MIN_REPLACE_MS         = 5000;
+const MIN_REPLACE_MS         = 4000;
 const MIN_BALANCE            = 5;
 const TICK_MS                = 500;
+const ORDER_FAIL_PAUSE_MS    = 5000; // after balance error, pause that side
 
-// Sizing table: spec table scaled ×5/11 (min 5 shares = Polymarket minimum)
+// Sizing: 5-share base, scaled by time (Polymarket minimum is 1, using 5 for meaningful lots)
 function getSize(secsToEnd) {
-  if (secsToEnd < 60)  return 5;   // was 11
-  if (secsToEnd < 180) return 6;   // was 13
-  if (secsToEnd < 300) return 8;   // was 17
-  if (secsToEnd < 600) return 9;   // was 19
-  return 9;                         // was 20
+  if (secsToEnd < 60)  return 5;
+  if (secsToEnd < 180) return 6;
+  if (secsToEnd < 300) return 8;
+  if (secsToEnd < 600) return 9;
+  return 9;
 }
 
 const fl2 = v => Math.round((v || 0) * 100) / 100;
@@ -51,15 +54,15 @@ async function getJson(url) {
   } catch (_) { return null; }
 }
 
-// ── State ────────────────────────────────────────────────────────────────────
+// ── Runtime state ─────────────────────────────────────────────────────────────
 let trader        = null;
 let balance       = 0;
 let startBalance  = 0;
-let marketCache   = {};
-let strategyState = {};
-let pendingOrders = {};   // id → { tokenId, side, price, shares, slug, dir, status, time }
-let fills         = [];   // recent fill log for dashboard
-let logs          = [];   // recent strategy logs
+let marketCache   = {};   // slug → market info
+let strategyState = {};   // slug → position state
+let pendingOrders = {};   // orderId → order record
+let recentFills   = [];   // for dashboard
+let activityLog   = [];   // for dashboard
 let tickCount     = 0;
 let startTime     = Date.now();
 let emitFn        = () => {};
@@ -67,57 +70,46 @@ let logFn         = () => {};
 
 function slog(msg) {
   const ts = new Date().toTimeString().substring(0, 8);
-  const line = `[${ts}] ${msg}`;
-  logs.unshift(line);
-  if (logs.length > 200) logs.length = 200;
+  activityLog.unshift(`[${ts}] ${msg}`);
+  if (activityLog.length > 150) activityLog.length = 150;
   logFn(msg);
 }
 
-function addFill(dir, shares, price, leg, pnl) {
-  const ts = new Date().toTimeString().substring(0, 8);
-  fills.unshift({ time: ts, dir, shares, price, leg, pnl });
-  if (fills.length > 100) fills.length = 100;
-}
-
-// ── Market discovery ─────────────────────────────────────────────────────────
+// ── Market discovery ──────────────────────────────────────────────────────────
 async function discoverMarkets() {
   const now = Math.floor(Date.now() / 1000);
   const ws  = 900;
   const cw  = Math.floor(now / ws) * ws;
-  const candidates = [cw - ws, cw, cw + ws].map(ep => ({
-    slug: `btc-updown-15m-${ep}`, epoch: ep, windowS: ws,
-  }));
 
-  await Promise.allSettled(candidates.map(async c => {
-    if (marketCache[c.slug]?.resolved) return;
-    const d = await getJson(`${GAMMA}/events?slug=${c.slug}`);
+  await Promise.allSettled([cw - ws, cw, cw + ws].map(async ep => {
+    const slug = `btc-updown-15m-${ep}`;
+    if (marketCache[slug]?.resolved) return;
+    const d = await getJson(`${GAMMA}/events?slug=${slug}`);
     if (!Array.isArray(d) || !d[0]?.markets?.[0]) return;
     const m = d[0].markets[0];
     if (!m.clobTokenIds) return;
     let tokenIds;
     try { tokenIds = JSON.parse(m.clobTokenIds); } catch (_) { return; }
     if (tokenIds.length < 2) return;
-    if (marketCache[c.slug]) return;
-    const tradingEndMs = (c.epoch + c.windowS) * 1000;
-    const secsLeft     = Math.round((tradingEndMs - Date.now()) / 1000);
-    marketCache[c.slug] = {
-      slug: c.slug, windowS: c.windowS,
+    if (marketCache[slug]) return;
+    marketCache[slug] = {
+      slug, windowS: ws, epoch: ep,
       upTokenId: tokenIds[0], downTokenId: tokenIds[1],
-      endTime: tradingEndMs, active: false, resolved: false,
-      hasClob: false, upMid: 0, downMid: 0, secondsToEnd: secsLeft,
+      endTime: (ep + ws) * 1000, active: false, resolved: false,
+      hasClob: false, upMid: 0, downMid: 0, secondsToEnd: ep + ws - now,
     };
-    slog(`🔍 Found: ${c.slug}`);
+    slog(`📡 Discovered: ${slug}`);
   }));
 }
 
-// ── Price update + fill detection ────────────────────────────────────────────
+// ── Price refresh ─────────────────────────────────────────────────────────────
 async function updatePrices() {
   const now = Date.now();
-  for (const m of Object.values(marketCache)) {
+  await Promise.allSettled(Object.values(marketCache).map(async m => {
     m.secondsToEnd = Math.floor((m.endTime - now) / 1000);
     m.active = !m.resolved && m.secondsToEnd > 0 && m.secondsToEnd <= m.windowS;
-    if (m.secondsToEnd < -60) { m.active = false; continue; }
-    if (!m.active) continue;
+    if (m.secondsToEnd < -120) { m.active = false; return; }
+    if (!m.active) return;
     const [upR, dnR] = await Promise.all([
       getJson(`${CLOB}/midpoint?token_id=${m.upTokenId}`),
       getJson(`${CLOB}/midpoint?token_id=${m.downTokenId}`),
@@ -125,101 +117,135 @@ async function updatePrices() {
     if (upR?.mid) m.upMid = parseFloat(upR.mid);
     if (dnR?.mid) m.downMid = parseFloat(dnR.mid);
     m.hasClob = m.upMid > 0 && m.downMid > 0;
-  }
+  }));
 }
 
+// ── Fill detection (checks open orders vs our pending list) ───────────────────
 async function checkFills() {
   if (!trader || Object.keys(pendingOrders).length === 0) return;
   let openOrders;
   try { openOrders = await trader.getOpenOrders(); } catch (_) { return; }
-
   const openIds = new Set((openOrders || []).map(o => o.id));
   const now = Date.now();
 
   for (const [id, po] of Object.entries(pendingOrders)) {
-    if (po.status === 'cancelling' && !openIds.has(id)) { po.status = 'cancelled'; continue; }
+    if (po.status === 'cancelling') {
+      if (!openIds.has(id)) {
+        // Confirm cancelled → credit back the locked funds
+        if (po.side === 'BUY') balance = fl2(balance + po.shares * po.price);
+        po.status = 'cancelled';
+      }
+      continue;
+    }
     if (po.status !== 'pending') continue;
     if (openIds.has(id)) continue;
 
-    // Disappeared from open orders → filled
+    // Disappeared → filled
     po.status = 'filled';
     const ss = strategyState[po.slug];
     if (!ss) continue;
 
     if (po.dir === 'up_buy') {
-      ss.upHeld += po.shares;
-      ss.upCost  = fl2(ss.upCost + po.shares * po.price);
+      // Balance already deducted at placement — just update inventory
+      ss.upHeld  += po.shares;
+      ss.upCost   = fl2(ss.upCost + po.shares * po.price);
       ss.lastUpFillTime  = now;
       ss.lastUpFillPrice = po.price;
       ss.upBuyOrderId    = null;
-      addFill('up_buy', po.shares, po.price, 'UP', 0);
+      ss.upFailTime      = 0;
+      recentFills.unshift({ ts: new Date().toTimeString().substring(0,8), leg:'UP', action:'BUY', shares:po.shares, price:po.price, bal:fl2(balance) });
+      if (recentFills.length > 80) recentFills.length = 80;
       slog(`✅ FILL BUY↑ ${po.shares}sh@${po.price} held:↑${ss.upHeld} ↓${ss.dnHeld}`);
-      trySettle(marketCache[po.slug], ss);
+      scheduleSettle(ss, marketCache[po.slug]);
 
     } else if (po.dir === 'dn_buy') {
-      ss.dnHeld += po.shares;
-      ss.dnCost  = fl2(ss.dnCost + po.shares * po.price);
+      ss.dnHeld  += po.shares;
+      ss.dnCost   = fl2(ss.dnCost + po.shares * po.price);
       ss.lastDnFillTime  = now;
       ss.lastDnFillPrice = po.price;
       ss.dnBuyOrderId    = null;
-      addFill('dn_buy', po.shares, po.price, 'DN', 0);
+      ss.dnFailTime      = 0;
+      recentFills.unshift({ ts: new Date().toTimeString().substring(0,8), leg:'DN', action:'BUY', shares:po.shares, price:po.price, bal:fl2(balance) });
+      if (recentFills.length > 80) recentFills.length = 80;
       slog(`✅ FILL BUY↓ ${po.shares}sh@${po.price} held:↑${ss.upHeld} ↓${ss.dnHeld}`);
-      trySettle(marketCache[po.slug], ss);
+      scheduleSettle(ss, marketCache[po.slug]);
 
     } else if (po.dir === 'up_sell') {
       const proceeds = fl2(po.shares * po.price);
       balance        = fl2(balance + proceeds);
       ss.upHeld      = Math.max(0, ss.upHeld - po.shares);
       ss.upSellId    = null;
-      const cost     = fl2(po.shares * (ss.upCost / (ss.upHeld + po.shares) || po.price));
-      const pnl      = fl2(proceeds - cost);
+      const avgUp    = ss.upHeld + po.shares > 0 ? ss.upCost / (ss.upHeld + po.shares) : po.price;
+      const pnl      = fl2(proceeds - po.shares * avgUp);
       ss.makerPnl    = fl2(ss.makerPnl + pnl);
-      addFill('up_sell', po.shares, po.price, 'UP', pnl);
-      slog(`♻️ SELL↑ ${po.shares}sh@${po.price} +$${proceeds} pnl:$${pnl} mkrPnl:$${fl2(ss.makerPnl)}`);
+      recentFills.unshift({ ts: new Date().toTimeString().substring(0,8), leg:'UP', action:'SELL', shares:po.shares, price:po.price, pnl, bal:fl2(balance) });
+      if (recentFills.length > 80) recentFills.length = 80;
+      slog(`♻️  SELL↑ ${po.shares}sh@${po.price} +$${proceeds} pnl:$${pnl} mkrPnl:$${fl2(ss.makerPnl)}`);
 
     } else if (po.dir === 'dn_sell') {
       const proceeds = fl2(po.shares * po.price);
       balance        = fl2(balance + proceeds);
       ss.dnHeld      = Math.max(0, ss.dnHeld - po.shares);
       ss.dnSellId    = null;
-      const cost     = fl2(po.shares * (ss.dnCost / (ss.dnHeld + po.shares) || po.price));
-      const pnl      = fl2(proceeds - cost);
+      const avgDn    = ss.dnHeld + po.shares > 0 ? ss.dnCost / (ss.dnHeld + po.shares) : po.price;
+      const pnl      = fl2(proceeds - po.shares * avgDn);
       ss.makerPnl    = fl2(ss.makerPnl + pnl);
       ss.completeSetsSettled++;
-      addFill('dn_sell', po.shares, po.price, 'DN', pnl);
-      slog(`♻️ SELL↓ ${po.shares}sh@${po.price} +$${proceeds} pnl:$${pnl} bal:$${fl2(balance)}`);
+      recentFills.unshift({ ts: new Date().toTimeString().substring(0,8), leg:'DN', action:'SELL', shares:po.shares, price:po.price, pnl, bal:fl2(balance) });
+      if (recentFills.length > 80) recentFills.length = 80;
+      slog(`♻️  SELL↓ ${po.shares}sh@${po.price} +$${proceeds} pnl:$${pnl} bal:$${fl2(balance)}`);
     }
+  }
 
-    // Clean up old closed orders
-    if (['filled', 'cancelled', 'expired'].includes(po.status) && now - po.time > 120000) {
+  // Purge old closed entries
+  const cutoff = now - 120000;
+  for (const [id, po] of Object.entries(pendingOrders)) {
+    if (['filled','cancelled','expired'].includes(po.status) && po.time < cutoff) {
       delete pendingOrders[id];
     }
   }
 }
 
-// ── Place / cancel helpers ────────────────────────────────────────────────────
+// ── Place order — deducts balance immediately for BUY (GTC locks funds) ───────
 async function placeOrder(tokenId, side, price, shares, slug, dir) {
   if (!trader) return null;
+
+  // Pre-deduct locked capital for BUY before the async call
+  if (side === 'BUY') balance = fl2(balance - shares * price);
+
   try {
     const result = await trader.placeOrder(tokenId, side, price, shares);
-    const oid = result?.id || result?.orderID || null;
-    if (!oid) { slog(`❌ No order ID: ${side} ${shares}sh@${price}`); return null; }
-    pendingOrders[oid] = { id: oid, tokenId, side, price, shares, slug, dir, status: 'pending', time: Date.now() };
+    const oid    = result?.id || result?.orderID || null;
+    if (!oid) {
+      // Placement failed — credit funds back
+      if (side === 'BUY') balance = fl2(balance + shares * price);
+      // Log balance errors only once per pause window (handled by caller with failTime)
+      if (!String(result).includes('balance')) {
+        slog(`❌ ${side} ${shares}sh@${price}: No order ID`);
+      }
+      return null;
+    }
+    pendingOrders[oid] = { id:oid, tokenId, side, price, shares, slug, dir, status:'pending', time:Date.now() };
     return oid;
   } catch (e) {
-    const msg = String(e.message || e).substring(0, 100);
-    if (!msg.includes('GEO_BLOCKED')) slog(`❌ ${side} ${shares}sh@${price}: ${msg}`);
+    if (side === 'BUY') balance = fl2(balance + shares * price);
+    const msg = String(e.message || e).substring(0, 80);
+    if (!msg.includes('balance') && !msg.includes('allowance')) slog(`❌ ${side} ${shares}sh@${price}: ${msg}`);
     return null;
   }
 }
 
+// Cancel a tracked order and credit back if it was a pending BUY
 function cancelTracked(orderId) {
-  if (!orderId || !pendingOrders[orderId]) return;
-  pendingOrders[orderId].status = 'cancelling';
+  const po = pendingOrders[orderId];
+  if (!po || po.status !== 'pending') return;
+  po.status = 'cancelling';
+  // Credit back speculatively — checkFills will confirm and not double-credit
+  // (using 'cancelling' status prevents double credit)
   trader?.cancelOrder(orderId).catch(() => {});
 }
 
-// ── Enter market ─────────────────────────────────────────────────────────────
+// ── Enter a new market window ─────────────────────────────────────────────────
 function tryEnter(m) {
   if (strategyState[m.slug]) return;
   if (!m.hasClob || m.secondsToEnd <= 5 || m.secondsToEnd > m.windowS) return;
@@ -227,236 +253,225 @@ function tryEnter(m) {
   const dnBid = fl4(m.downMid - 0.005);
   const edge  = fl4(1.0 - upBid - dnBid);
   if (edge < MIN_EDGE) return;
-
   strategyState[m.slug] = {
     phase: 'maker',
     upHeld: 0, dnHeld: 0, upCost: 0, dnCost: 0,
     upBuyPrice: 0, dnBuyPrice: 0,
-    upOrderTime: Date.now(), dnOrderTime: Date.now(),
     upBuyOrderId: null, dnBuyOrderId: null,
+    upOrderTime: 0, dnOrderTime: 0,
     upSellId: null, dnSellId: null,
+    upFailTime: 0, dnFailTime: 0,  // when last balance error happened
     lastUpFillTime: 0, lastDnFillTime: 0, lastTopUpTime: 0,
     lastUpFillPrice: 0, lastDnFillPrice: 0,
     completeSetsSettled: 0, makerPnl: 0, settlePnl: 0, takerTopUps: 0,
     entryTime: Date.now(),
   };
-  slog(`🟢 ENTER BTC 15m | UP:${fl4(m.upMid)} DN:${fl4(m.downMid)} edge:${fl4(edge)} remaining:${m.secondsToEnd}s`);
+  slog(`🟢 ENTER BTC 15m | UP:${fl4(m.upMid)} DN:${fl4(m.downMid)} edge:${fl4(edge)} rem:${m.secondsToEnd}s`);
 }
 
-// ── Maker tick ────────────────────────────────────────────────────────────────
+// ── Maker tick — manage GTC quotes on both legs ───────────────────────────────
 async function makerTick(m, ss) {
-  const upBid = fl4(m.upMid - 0.005);
-  const upAsk = fl4(m.upMid + 0.005);
-  const dnBid = fl4(m.downMid - 0.005);
-  const dnAsk = fl4(m.downMid + 0.005);
+  const upMid = m.upMid, dnMid = m.downMid;
+  const upBid = fl4(upMid - 0.005), upAsk = fl4(upMid + 0.005);
+  const dnBid = fl4(dnMid - 0.005), dnAsk = fl4(dnMid + 0.005);
   const edge  = fl4(1.0 - upBid - dnBid);
+  const now   = Date.now();
 
+  // ── If edge is gone: cancel all outstanding buy orders and stop ──
   if (edge < MIN_EDGE) {
-    ss.upBuyPrice = 0; ss.dnBuyPrice = 0;
-    slog(`⏸ NO EDGE: ${fl4(edge)} (UP:${fl4(m.upMid)} DN:${fl4(m.downMid)})`);
+    if (ss.upBuyOrderId) { cancelTracked(ss.upBuyOrderId); ss.upBuyOrderId = null; ss.upBuyPrice = 0; }
+    if (ss.dnBuyOrderId) { cancelTracked(ss.dnBuyOrderId); ss.dnBuyOrderId = null; ss.dnBuyPrice = 0; }
+    slog(`⏸  NO EDGE: ${fl4(edge)} | UP:${fl4(upMid)} DN:${fl4(dnMid)}`);
     return;
   }
 
-  // Inventory skew
-  const imbalance = ss.upHeld - ss.dnHeld;
-  const scale     = Math.min(Math.abs(imbalance) / SKEW_SHARES_FOR_MAX, 1);
-  const skew      = Math.round(scale * MAX_SKEW_TICKS);
-  const skewUp    = imbalance > 0 ? -skew : +skew;
-  const skewDn    = imbalance > 0 ? +skew : -skew;
+  const imbalance   = ss.upHeld - ss.dnHeld;
+  const scale       = Math.min(Math.abs(imbalance) / SKEW_SHARES_FOR_MAX, 1);
+  const skew        = Math.round(scale * MAX_SKEW_TICKS);
+  const skewUp      = imbalance > 0 ? -skew : +skew;
+  const skewDn      = imbalance > 0 ? +skew : -skew;
+  const upEntry     = fl4(Math.min(upBid + TICK_SIZE * (IMPROVE_TICKS + skewUp), upMid - 0.001));
+  const dnEntry     = fl4(Math.min(dnBid + TICK_SIZE * (IMPROVE_TICKS + skewDn), dnMid - 0.001));
 
-  // Maker entry prices: bestBid + improve_ticks + skew, capped at mid
-  const upEntry = fl4(Math.min(upBid + TICK_SIZE * (IMPROVE_TICKS + skewUp), m.upMid - 0.001));
-  const dnEntry = fl4(Math.min(dnBid + TICK_SIZE * (IMPROVE_TICKS + skewDn), m.downMid - 0.001));
-  const now     = Date.now();
+  // Position guards
+  const canBuyUp = ss.upHeld < MAX_POSITION_PER_LEG
+                && imbalance <= MAX_IMBALANCE
+                && balance >= MIN_BALANCE
+                && (now - ss.upFailTime) > ORDER_FAIL_PAUSE_MS;
 
-  // Update and place UP quote
-  if (upEntry !== ss.upBuyPrice && (now - ss.upOrderTime) >= MIN_REPLACE_MS || ss.upBuyPrice === 0) {
-    if (ss.upBuyOrderId && upEntry !== ss.upBuyPrice) {
-      cancelTracked(ss.upBuyOrderId);
-      ss.upBuyOrderId = null;
-    }
-    ss.upBuyPrice  = upEntry;
-    ss.upOrderTime = now;
+  const canBuyDn = ss.dnHeld < MAX_POSITION_PER_LEG
+                && imbalance >= -MAX_IMBALANCE
+                && balance >= MIN_BALANCE
+                && (now - ss.dnFailTime) > ORDER_FAIL_PAUSE_MS;
+
+  // ── UP leg ──
+  const upPriceChanged = upEntry !== ss.upBuyPrice;
+  if (upPriceChanged && ss.upBuyOrderId && (now - ss.upOrderTime) >= MIN_REPLACE_MS) {
+    cancelTracked(ss.upBuyOrderId);
+    ss.upBuyOrderId = null; ss.upBuyPrice = 0;
   }
-  if (ss.upBuyPrice > 0 && !ss.upBuyOrderId && balance >= MIN_BALANCE) {
+  if (!ss.upBuyOrderId && canBuyUp) {
+    ss.upBuyPrice = upEntry; ss.upOrderTime = now;
     const sz = getSize(m.secondsToEnd);
-    placeOrder(m.upTokenId, 'BUY', ss.upBuyPrice, sz, m.slug, 'up_buy').then(oid => {
-      if (oid) ss.upBuyOrderId = oid;
-    });
-  }
-
-  // Update and place DN quote
-  if (dnEntry !== ss.dnBuyPrice && (now - ss.dnOrderTime) >= MIN_REPLACE_MS || ss.dnBuyPrice === 0) {
-    if (ss.dnBuyOrderId && dnEntry !== ss.dnBuyPrice) {
-      cancelTracked(ss.dnBuyOrderId);
-      ss.dnBuyOrderId = null;
+    const oid = await placeOrder(m.upTokenId, 'BUY', upEntry, sz, m.slug, 'up_buy');
+    if (oid) {
+      ss.upBuyOrderId = oid;
+    } else {
+      ss.upBuyPrice = 0;
+      ss.upFailTime = now;
     }
-    ss.dnBuyPrice  = dnEntry;
-    ss.dnOrderTime = now;
   }
-  if (ss.dnBuyPrice > 0 && !ss.dnBuyOrderId && balance >= MIN_BALANCE) {
+
+  // ── DN leg ──
+  const dnPriceChanged = dnEntry !== ss.dnBuyPrice;
+  if (dnPriceChanged && ss.dnBuyOrderId && (now - ss.dnOrderTime) >= MIN_REPLACE_MS) {
+    cancelTracked(ss.dnBuyOrderId);
+    ss.dnBuyOrderId = null; ss.dnBuyPrice = 0;
+  }
+  if (!ss.dnBuyOrderId && canBuyDn) {
+    ss.dnBuyPrice = dnEntry; ss.dnOrderTime = now;
     const sz = getSize(m.secondsToEnd);
-    placeOrder(m.downTokenId, 'BUY', ss.dnBuyPrice, sz, m.slug, 'dn_buy').then(oid => {
-      if (oid) ss.dnBuyOrderId = oid;
-    });
+    const oid = await placeOrder(m.downTokenId, 'BUY', dnEntry, sz, m.slug, 'dn_buy');
+    if (oid) {
+      ss.dnBuyOrderId = oid;
+    } else {
+      ss.dnBuyPrice = 0;
+      ss.dnFailTime = now;
+    }
   }
 
-  // Settle any complete sets already in hand
-  trySettle(m, ss);
+  // Settle any complete sets
+  scheduleSettle(ss, m);
 
-  // Fast top-up
+  // Fast top-up if imbalance is large enough
   await tryFastTopUp(m, ss, upAsk, dnAsk, edge, now);
 }
 
-// ── Settle complete sets: sell both sides at ask ──────────────────────────────
-function trySettle(m, ss) {
+// ── Settle complete sets: sell both at ask (combined ≈ $1.00) ─────────────────
+function scheduleSettle(ss, m) {
+  if (!m || !m.hasClob) return;
   const canSettle = Math.min(ss.upHeld, ss.dnHeld);
-  if (canSettle <= 0 || !m) return;
+  if (canSettle <= 0) return;
   const upAsk = fl4(m.upMid + 0.005);
   const dnAsk = fl4(m.downMid + 0.005);
-
-  // Place UP sell if not already placed
   if (!ss.upSellId) {
     placeOrder(m.upTokenId, 'SELL', upAsk, canSettle, m.slug, 'up_sell').then(oid => {
-      if (oid) { ss.upSellId = oid; }
+      if (oid) ss.upSellId = oid;
     });
   }
-  // Place DN sell if not already placed
   if (!ss.dnSellId) {
     placeOrder(m.downTokenId, 'SELL', dnAsk, canSettle, m.slug, 'dn_sell').then(oid => {
-      if (oid) { ss.dnSellId = oid; }
+      if (oid) ss.dnSellId = oid;
     });
   }
 }
 
-// ── Fast top-up ───────────────────────────────────────────────────────────────
+// ── Fast top-up (taker buy) for lagging leg ───────────────────────────────────
 async function tryFastTopUp(m, ss, upAsk, dnAsk, edge, now) {
-  const imbalance    = ss.upHeld - ss.dnHeld;
-  const absImbalance = Math.abs(imbalance);
-  if (absImbalance < FAST_TOPUP_MIN_IMB) return;
+  const imb = ss.upHeld - ss.dnHeld;
+  if (Math.abs(imb) < FAST_TOPUP_MIN_IMB) return;
   if (now - ss.lastTopUpTime < FAST_TOPUP_COOLDOWN_MS) return;
+  if (balance < MIN_BALANCE) return;
 
-  if (imbalance > 0) {
-    // More UP than DN → top-up DN at ask
-    if (!ss.lastUpFillTime) return;
-    const secsSince = (now - ss.lastUpFillTime) / 1000;
-    if (secsSince < FAST_TOPUP_MIN_SECS || secsSince > FAST_TOPUP_MAX_SECS) return;
+  if (imb > 0 && (now - ss.dnFailTime) > ORDER_FAIL_PAUSE_MS) {
     const hedgedEdge = fl4(1.0 - ss.lastUpFillPrice - dnAsk);
     if (hedgedEdge < MIN_EDGE) return;
-    const spread = 0.01;
-    if (spread > TAKER_MAX_SPREAD) return;
-    const sz = getSize(m.secondsToEnd);
+    if (dnAsk - (m.downMid - 0.005) > TAKER_MAX_SPREAD) return;
+    const sz = Math.min(getSize(m.secondsToEnd), imb);
     const oid = await placeOrder(m.downTokenId, 'BUY', dnAsk, sz, m.slug, 'dn_buy');
     if (oid) {
-      ss.lastTopUpTime = now;
-      ss.takerTopUps++;
-      slog(`⚡ FAST TOPUP↓ ${sz}sh@${fl4(dnAsk)} hedgedEdge:${fl4(hedgedEdge)}`);
-    }
-  } else {
-    // More DN than UP → top-up UP at ask
-    if (!ss.lastDnFillTime) return;
-    const secsSince = (now - ss.lastDnFillTime) / 1000;
-    if (secsSince < FAST_TOPUP_MIN_SECS || secsSince > FAST_TOPUP_MAX_SECS) return;
+      ss.lastTopUpTime = now; ss.takerTopUps++;
+      slog(`⚡ TOPUP↓ ${sz}sh@${fl4(dnAsk)} hedgedEdge:${fl4(hedgedEdge)}`);
+    } else { ss.dnFailTime = now; }
+
+  } else if (imb < 0 && (now - ss.upFailTime) > ORDER_FAIL_PAUSE_MS) {
     const hedgedEdge = fl4(1.0 - upAsk - ss.lastDnFillPrice);
     if (hedgedEdge < MIN_EDGE) return;
-    const spread = 0.01;
-    if (spread > TAKER_MAX_SPREAD) return;
-    const sz = getSize(m.secondsToEnd);
+    if (upAsk - (m.upMid - 0.005) > TAKER_MAX_SPREAD) return;
+    const sz = Math.min(getSize(m.secondsToEnd), -imb);
     const oid = await placeOrder(m.upTokenId, 'BUY', upAsk, sz, m.slug, 'up_buy');
     if (oid) {
-      ss.lastTopUpTime = now;
-      ss.takerTopUps++;
-      slog(`⚡ FAST TOPUP↑ ${sz}sh@${fl4(upAsk)} hedgedEdge:${fl4(hedgedEdge)}`);
-    }
+      ss.lastTopUpTime = now; ss.takerTopUps++;
+      slog(`⚡ TOPUP↑ ${sz}sh@${fl4(upAsk)} hedgedEdge:${fl4(hedgedEdge)}`);
+    } else { ss.upFailTime = now; }
   }
 }
 
-// ── Endgame ───────────────────────────────────────────────────────────────────
+// ── Endgame (<60s): cancel maker quotes, try to settle any held positions ─────
 async function endgameTick(m, ss) {
   if (ss.phase !== 'endgame') {
     ss.phase = 'endgame';
-    ss.upBuyPrice = 0; ss.dnBuyPrice = 0;
-    cancelTracked(ss.upBuyOrderId); ss.upBuyOrderId = null;
-    cancelTracked(ss.dnBuyOrderId); ss.dnBuyOrderId = null;
+    // Cancel all pending maker buy orders
+    if (ss.upBuyOrderId) { cancelTracked(ss.upBuyOrderId); ss.upBuyOrderId = null; ss.upBuyPrice = 0; }
+    if (ss.dnBuyOrderId) { cancelTracked(ss.dnBuyOrderId); ss.dnBuyOrderId = null; ss.dnBuyPrice = 0; }
     slog(`🛑 ENDGAME | held ↑${ss.upHeld} ↓${ss.dnHeld} imb:${ss.upHeld - ss.dnHeld} sets:${ss.completeSetsSettled}`);
-    // Try to settle any complete sets we're holding
-    trySettle(m, ss);
+    scheduleSettle(ss, m);
   }
 
-  const imbalance    = ss.upHeld - ss.dnHeld;
-  const absImbalance = Math.abs(imbalance);
-  if (absImbalance < ENDGAME_MIN_IMB) return;
-
-  const upAsk = fl4(m.upMid + 0.005);
-  const dnAsk = fl4(m.downMid + 0.005);
-  const now   = Date.now();
+  // Try to close imbalance with taker buy on lagging leg
+  const imb = ss.upHeld - ss.dnHeld;
+  const absImb = Math.abs(imb);
+  if (absImb < 5) return;
+  const now = Date.now();
   if (now - ss.lastTopUpTime < 5000) return;
-
-  if (imbalance > 0) {
-    const sz  = Math.min(absImbalance, getSize(m.secondsToEnd));
-    const oid = await placeOrder(m.downTokenId, 'BUY', dnAsk, sz, m.slug, 'dn_buy');
-    if (oid) { ss.lastTopUpTime = now; ss.takerTopUps++; slog(`🏁 ENDGAME TOPUP↓ ${sz}sh@${fl4(dnAsk)}`); }
+  if (balance < MIN_BALANCE) return;
+  const sz = Math.min(getSize(m.secondsToEnd), absImb);
+  if (imb > 0) {
+    const oid = await placeOrder(m.downTokenId, 'BUY', fl4(m.downMid + 0.005), sz, m.slug, 'dn_buy');
+    if (oid) { ss.lastTopUpTime = now; ss.takerTopUps++; slog(`🏁 ENDGAME TOPUP↓ ${sz}sh`); }
+    else ss.dnFailTime = now;
   } else {
-    const sz  = Math.min(absImbalance, getSize(m.secondsToEnd));
-    const oid = await placeOrder(m.upTokenId, 'BUY', upAsk, sz, m.slug, 'up_buy');
-    if (oid) { ss.lastTopUpTime = now; ss.takerTopUps++; slog(`🏁 ENDGAME TOPUP↑ ${sz}sh@${fl4(upAsk)}`); }
+    const oid = await placeOrder(m.upTokenId, 'BUY', fl4(m.upMid + 0.005), sz, m.slug, 'up_buy');
+    if (oid) { ss.lastTopUpTime = now; ss.takerTopUps++; slog(`🏁 ENDGAME TOPUP↑ ${sz}sh`); }
+    else ss.upFailTime = now;
   }
 }
 
-// ── Settlement at resolution ──────────────────────────────────────────────────
+// ── Settlement at market resolution ──────────────────────────────────────────
 function settle(m, ss) {
   if (ss.phase === 'resolved') return;
-  if (m.secondsToEnd > -15) return;
+  if (m.secondsToEnd > -10) return;
   ss.phase = 'resolved';
 
   const upWins = m.upMid >= m.downMid;
   let settlePnl = 0;
-
-  // Any held shares on winning side pay $1 at resolution
   if (upWins && ss.upHeld > 0) {
     const proceeds = fl2(ss.upHeld * 1.0);
-    balance        = fl2(balance + proceeds);
-    settlePnl      = fl2(proceeds - ss.upCost);
-    slog(`🏆 SETTLE UP wins | ${ss.upHeld}sh → +$${proceeds} net:$${fl2(settlePnl)}`);
+    balance   = fl2(balance + proceeds);
+    settlePnl = fl2(proceeds - ss.upCost);
+    slog(`🏆 UP wins | ${ss.upHeld}sh → +$${proceeds} net:$${fl2(settlePnl)}`);
   } else if (!upWins && ss.dnHeld > 0) {
     const proceeds = fl2(ss.dnHeld * 1.0);
-    balance        = fl2(balance + proceeds);
-    settlePnl      = fl2(proceeds - ss.dnCost);
-    slog(`🏆 SETTLE DN wins | ${ss.dnHeld}sh → +$${proceeds} net:$${fl2(settlePnl)}`);
+    balance   = fl2(balance + proceeds);
+    settlePnl = fl2(proceeds - ss.dnCost);
+    slog(`🏆 DN wins | ${ss.dnHeld}sh → +$${proceeds} net:$${fl2(settlePnl)}`);
   } else {
-    slog(`💀 SETTLE ${upWins ? 'UP' : 'DN'} wins — losing side worthless`);
+    slog(`💀 SETTLED — losing-side shares worthless`);
   }
-
   ss.settlePnl = settlePnl;
-  const total  = fl2(ss.makerPnl + settlePnl);
-  slog(`✅ RESOLVED | sets:${ss.completeSetsSettled} mkrPnl:$${fl2(ss.makerPnl)} settlePnl:$${fl2(settlePnl)} total:$${fl2(total)} bal:$${fl2(balance)}`);
+  slog(`✅ RESOLVED | sets:${ss.completeSetsSettled} mkrPnl:$${fl2(ss.makerPnl)} settlePnl:$${fl2(settlePnl)} bal:$${fl2(balance)}`);
   m.resolved = true;
 }
 
-// ── Strategy tick ─────────────────────────────────────────────────────────────
+// ── Strategy tick (runs every 500ms) ─────────────────────────────────────────
 async function strategyTick() {
   if (KILL_SWITCH) return;
-
   for (const m of Object.values(marketCache)) {
-    if (!m.active && m.secondsToEnd > -60) {
+    if (!m.active || !m.hasClob) {
       const ss = strategyState[m.slug];
       if (ss && ss.phase !== 'resolved') settle(m, ss);
       continue;
     }
-    if (!m.active || !m.hasClob) continue;
     if (!strategyState[m.slug]) tryEnter(m);
     const ss = strategyState[m.slug];
     if (!ss || ss.phase === 'resolved') continue;
-    if (m.secondsToEnd <= -15) { settle(m, ss); continue; }
-    if (m.secondsToEnd <= ENDGAME_SECS) {
-      await endgameTick(m, ss);
-    } else {
-      await makerTick(m, ss);
-    }
+    if (m.secondsToEnd <= -10) { settle(m, ss); continue; }
+    if (m.secondsToEnd <= ENDGAME_SECS) await endgameTick(m, ss);
+    else                                await makerTick(m, ss);
   }
 }
 
-// ── Main tick ─────────────────────────────────────────────────────────────────
+// ── Main tick loop ────────────────────────────────────────────────────────────
 async function tick() {
   try {
     tickCount++;
@@ -464,70 +479,70 @@ async function tick() {
     await updatePrices();
     await strategyTick();
     await checkFills();
-    // Sync real balance every 30 ticks (~15s)
-    if (tickCount % 30 === 0 && trader) {
+    // Sync real balance from chain every 20s to correct any drift
+    if (tickCount % 40 === 0 && trader) {
       const rb = await trader.getBalance().catch(() => -1);
       if (rb > 0) balance = rb;
     }
     emitFn('snapshot', buildSnapshot());
-  } catch (e) { slog(`⚠️ tick: ${e.message}`); }
+  } catch (e) { slog(`⚠️  tick: ${e.message}`); }
 }
 
-// ── Snapshot ──────────────────────────────────────────────────────────────────
+// ── Snapshot (sent to dashboard via socket.io) ────────────────────────────────
 function buildSnapshot() {
-  const active  = Object.values(marketCache).filter(m => m.active);
-  const allSS   = Object.entries(strategyState);
-  const entered = allSS.find(([, s]) => s.phase !== 'resolved');
-  const market  = entered ? marketCache[entered[0]] : active[0] || null;
-  const ss      = entered ? entered[1] : null;
-
-  const upMid   = market?.upMid   || 0;
-  const downMid = market?.downMid || 0;
-  const upBid   = fl4(upMid - 0.005);
-  const dnBid   = fl4(downMid - 0.005);
-  const edge    = fl4(1.0 - upBid - dnBid);
+  const activeMkts = Object.values(marketCache).filter(m => m.active);
+  const positions  = Object.entries(strategyState).filter(([, s]) => s.phase !== 'resolved');
+  const cur        = positions[0];
+  const curM       = cur ? marketCache[cur[0]] : activeMkts[0] || null;
+  const curS       = cur ? cur[1] : null;
 
   let totalMakerPnl = 0, totalSettlePnl = 0, totalSets = 0, totalTopUps = 0;
-  for (const [, st] of allSS) {
-    totalMakerPnl  += st.makerPnl;
-    totalSettlePnl += st.settlePnl;
-    totalSets      += st.completeSetsSettled;
-    totalTopUps    += st.takerTopUps;
+  for (const [, s] of Object.entries(strategyState)) {
+    totalMakerPnl  += s.makerPnl;
+    totalSettlePnl += s.settlePnl;
+    totalSets      += s.completeSetsSettled;
+    totalTopUps    += s.takerTopUps;
   }
 
+  const upMid  = curM?.upMid  || 0;
+  const dnMid  = curM?.downMid || 0;
+  const edge   = fl4(1.0 - fl4(upMid - 0.005) - fl4(dnMid - 0.005));
+
   return {
+    // Core financials
     balance:      fl2(balance),
     startBalance: fl2(startBalance),
     pnl:          fl2(balance - startBalance),
-    tickCount, liveMode: true, geoBlocked: false,
-    uptime:       Math.floor((Date.now() - startTime) / 1000),
-    killSwitch:   KILL_SWITCH,
-    commitVersion: process.env.RAILWAY_GIT_COMMIT || process.env.GIT_COMMIT || 'live',
 
+    // Market
     market: {
-      slug:         market?.slug || 'BTC-15m',
-      upMid:        fl4(upMid), downMid: fl4(downMid),
-      secondsToEnd: market?.secondsToEnd ?? -1,
-      active:       market?.active ?? false,
-      hasClob:      market?.hasClob ?? false,
-      edge, hasEdge: edge >= MIN_EDGE,
+      slug:         curM?.slug || '',
+      upMid:        fl4(upMid),
+      downMid:      fl4(dnMid),
+      secondsToEnd: curM?.secondsToEnd ?? -1,
+      active:       curM?.active ?? false,
+      hasClob:      curM?.hasClob ?? false,
+      edge,
+      hasEdge: edge >= MIN_EDGE,
     },
 
-    position: ss ? {
-      phase:                ss.phase,
-      upHeld:               ss.upHeld,
-      dnHeld:               ss.dnHeld,
-      imbalance:            ss.upHeld - ss.dnHeld,
-      upBuyPrice:           ss.upBuyPrice,
-      dnBuyPrice:           ss.dnBuyPrice,
-      upCost:               fl2(ss.upCost),
-      dnCost:               fl2(ss.dnCost),
-      completeSetsRedeemed: ss.completeSetsSettled,
-      makerPnl:             fl2(ss.makerPnl),
-      settlePnl:            fl2(ss.settlePnl),
-      takerTopUps:          ss.takerTopUps,
+    // Active position
+    position: curS ? {
+      phase:                curS.phase,
+      upHeld:               curS.upHeld,
+      dnHeld:               curS.dnHeld,
+      imbalance:            curS.upHeld - curS.dnHeld,
+      upBuyPrice:           curS.upBuyPrice,
+      dnBuyPrice:           curS.dnBuyPrice,
+      upCost:               fl2(curS.upCost),
+      dnCost:               fl2(curS.dnCost),
+      completeSetsSettled:  curS.completeSetsSettled,
+      makerPnl:             fl2(curS.makerPnl),
+      settlePnl:            fl2(curS.settlePnl),
+      takerTopUps:          curS.takerTopUps,
     } : null,
 
+    // Session totals
     session: {
       makerPnl:  fl2(totalMakerPnl),
       settlePnl: fl2(totalSettlePnl),
@@ -535,11 +550,18 @@ function buildSnapshot() {
       topUps:    totalTopUps,
     },
 
-    fills:         fills.slice(0, 60),
-    logs:          logs.slice(0, 60),
-    markets:       Object.keys(marketCache).length,
-    activeMarkets: active.length,
+    // Dashboard feeds
+    recentFills:   recentFills.slice(0, 60),
+    activityLog:   activityLog.slice(0, 50),
+
+    // Meta
+    tickCount,
+    uptime:       Math.floor((Date.now() - startTime) / 1000),
+    activeMarkets: activeMkts.length,
     pendingOrders: Object.values(pendingOrders).filter(o => o.status === 'pending').length,
+    liveMode:     true,
+    killSwitch:   KILL_SWITCH,
+    commitVersion: process.env.RAILWAY_GIT_COMMIT || process.env.GIT_COMMIT || 'live',
   };
 }
 
@@ -547,15 +569,13 @@ function buildSnapshot() {
 async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
 
-  if (KILL_SWITCH) {
-    slog('🔴 KILL_SWITCH=true — bot paused. Set KILL_SWITCH=false on Railway to enable trading.');
-  }
+  if (KILL_SWITCH) slog('🔴 KILL_SWITCH=true — set KILL_SWITCH=false on Railway to enable trading');
 
-  slog(`🤖 Complete-Set Arb v1 | sizing:5→9sh | tick:${TICK_MS}ms | edge≥${MIN_EDGE}`);
+  slog(`🤖 Complete-Set Arb v2 | sz:5-9sh | edge≥${MIN_EDGE} | maxPos:${MAX_POSITION_PER_LEG} | maxImb:${MAX_IMBALANCE}`);
 
   trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY, process.env.FUNDER_ADDRESS);
   trader.setLogFn(logFn);
-  slog('🔑 Authenticating with Polymarket CLOB...');
+  slog('🔑 Authenticating...');
   const auth = await trader.authenticate();
   if (!auth) { slog('❌ Auth failed. Check POLYMARKET_PRIVATE_KEY.'); process.exit(1); }
 
@@ -564,7 +584,7 @@ async function start(emit, logEmit) {
   slog(`✅ LIVE | wallet:${trader.address} bal:$${fl2(balance)}`);
 
   await tick();
-  setInterval(() => tick().catch(e => slog(`⚠️ ${e.message}`)), TICK_MS);
+  setInterval(() => tick().catch(e => slog(`⚠️  ${e.message}`)), TICK_MS);
 }
 
 module.exports = { start, buildSnapshot, tick };

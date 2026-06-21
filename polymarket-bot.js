@@ -31,12 +31,9 @@ const MIN_BALANCE            = 5;
 const TICK_MS                = 500;
 const ORDER_FAIL_PAUSE_MS    = 5000; // after balance error, pause that side
 
-// Sizing: 5-share base, scaled by time (Polymarket minimum is 1, using 5 for meaningful lots)
+// Sizing: 9 shares always; reduce only in the final 60s to limit endgame exposure
 function getSize(secsToEnd) {
-  if (secsToEnd < 60)  return 5;
-  if (secsToEnd < 180) return 6;
-  if (secsToEnd < 300) return 8;
-  if (secsToEnd < 600) return 9;
+  if (secsToEnd < 60) return 5;
   return 9;
 }
 
@@ -347,7 +344,7 @@ async function makerTick(m, ss) {
   await tryFastTopUp(m, ss, upAsk, dnAsk, edge, now);
 }
 
-// ── Settle complete sets: sell both at ask (combined ≈ $1.00) ─────────────────
+// ── Settle complete sets (maker phase): sell min(upHeld,dnHeld) pairs at ask ──
 function scheduleSettle(ss, m) {
   if (!m || !m.hasClob) return;
   const canSettle = Math.min(ss.upHeld, ss.dnHeld);
@@ -362,6 +359,25 @@ function scheduleSettle(ss, m) {
   if (!ss.dnSellId) {
     placeOrder(m.downTokenId, 'SELL', dnAsk, canSettle, m.slug, 'dn_sell').then(oid => {
       if (oid) ss.dnSellId = oid;
+    });
+  }
+}
+
+// ── Endgame sell: sell ALL held shares on both legs at ask ────────────────────
+// Called every endgame tick. Uses same upSellId/dnSellId tracking so it only
+// places a new order when the previous one filled (id cleared) or never existed.
+function scheduleEndgameSell(ss, m) {
+  if (!m || !m.hasClob) return;
+  const upAsk = fl4(m.upMid + 0.005);
+  const dnAsk = fl4(m.downMid + 0.005);
+  if (ss.upHeld > 0 && !ss.upSellId) {
+    placeOrder(m.upTokenId, 'SELL', upAsk, ss.upHeld, m.slug, 'up_sell').then(oid => {
+      if (oid) { ss.upSellId = oid; slog(`📤 ENDGAME SELL↑ ${ss.upHeld}sh@${upAsk}`); }
+    });
+  }
+  if (ss.dnHeld > 0 && !ss.dnSellId) {
+    placeOrder(m.downTokenId, 'SELL', dnAsk, ss.dnHeld, m.slug, 'dn_sell').then(oid => {
+      if (oid) { ss.dnSellId = oid; slog(`📤 ENDGAME SELL↓ ${ss.dnHeld}sh@${dnAsk}`); }
     });
   }
 }
@@ -397,18 +413,20 @@ async function tryFastTopUp(m, ss, upAsk, dnAsk, edge, now) {
   }
 }
 
-// ── Endgame (<60s): cancel maker quotes, try to settle any held positions ─────
+// ── Endgame (<60s): cancel maker quotes, sell ALL positions, taker-fill any gap ─
 async function endgameTick(m, ss) {
   if (ss.phase !== 'endgame') {
     ss.phase = 'endgame';
-    // Cancel all pending maker buy orders
     if (ss.upBuyOrderId) { cancelTracked(ss.upBuyOrderId); ss.upBuyOrderId = null; ss.upBuyPrice = 0; }
     if (ss.dnBuyOrderId) { cancelTracked(ss.dnBuyOrderId); ss.dnBuyOrderId = null; ss.dnBuyPrice = 0; }
     slog(`🛑 ENDGAME | held ↑${ss.upHeld} ↓${ss.dnHeld} imb:${ss.upHeld - ss.dnHeld} sets:${ss.completeSetsSettled}`);
-    scheduleSettle(ss, m);
   }
 
-  // Try to close imbalance with taker buy on lagging leg
+  // Every endgame tick: place sell orders for ALL held shares at ask
+  // (scheduleEndgameSell is idempotent — only places when no open sell exists)
+  scheduleEndgameSell(ss, m);
+
+  // Also try taker buy on the lagging leg to close imbalance before close
   const imb = ss.upHeld - ss.dnHeld;
   const absImb = Math.abs(imb);
   if (absImb < 5) return;

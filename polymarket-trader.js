@@ -73,6 +73,8 @@ class PolymarketTrader {
   constructor(privateKey) {
     this.wallet = new ethers.Wallet(privateKey);
     this.address = this.wallet.address;
+    this.signerAddress = this.address;
+    this._feeCache = null;
     this.logFn = () => {};
     this.apiKey = null;
     this.apiSecret = null;
@@ -203,6 +205,23 @@ class PolymarketTrader {
     return 0;
   }
 
+  // ── Fetch fee rate for a token (cached) ──
+  async getFeeRate(tokenId) {
+    if (this._feeCache && this._feeCache.tokenId === tokenId && Date.now() - this._feeCache.ts < 300000) return this._feeCache.rate;
+    try {
+      const data = await this.fetch(`${CLOB_API}/fee-rate?token_id=${tokenId}`);
+      if (data && typeof data.base_fee !== 'undefined') {
+        const rate = Number(data.base_fee);
+        this._feeCache = { tokenId, rate, ts: Date.now() };
+        this.logFn(`💸 Fee rate: ${rate} bps`);
+        return rate;
+      }
+    } catch (_) { /* ignore */ }
+    const fallback = 1000;
+    this.logFn(`⚠️ Using default fee rate ${fallback} bps`);
+    return fallback;
+  }
+
   // ── Get midpoint price (public, no auth) ──
   async getMidpoint(tokenId) {
     const data = await this.fetch(`${CLOB_API}/midpoint?token_id=${tokenId}`);
@@ -226,42 +245,46 @@ class PolymarketTrader {
     }
     
     const salt = Math.floor(Math.random() * Date.now()).toString();
-    const feeRateBps = '0';
     const expiration = '0';
     const nonce = (++this.nonce).toString();
     const scale = Math.pow(10, COLLATERAL_DECIMALS);
+    // Get the market's fee rate – MUST match or API rejects with "Invalid order payload"
+    const marketFeeBps = await this.getFeeRate(tokenId);
+    const feeRateBps = marketFeeBps.toString();
     
     // Calculate maker/taker amounts (USDC has 6 decimals)
     // For BUY: maker pays cost (shares * price), taker gives shares
     // For SELL: maker gives shares, taker pays cost
+    const rawPrice = Math.round(price / 0.01) * 0.01; // round to tick size 0.01
     let makerAmount, takerAmount;
     if (side === 'BUY') {
-      const rawCost = Math.floor(size * price * 100) / 100; // round to cents
-      makerAmount = BigInt(Math.floor(rawCost * scale)).toString();
-      takerAmount = BigInt(Math.floor(size * scale)).toString();
+      const rawTakerAmt = size;
+      const rawMakerAmt_full = rawTakerAmt * rawPrice;
+      const rawMakerAmt = Math.floor(rawMakerAmt_full * 100) / 100;
+      makerAmount = BigInt(Math.floor(rawMakerAmt * scale)).toString();
+      takerAmount = BigInt(Math.floor(rawTakerAmt * scale)).toString();
     } else {
       makerAmount = BigInt(Math.floor(size * scale)).toString();
-      takerAmount = BigInt(Math.floor(size * price * scale)).toString();
+      takerAmount = BigInt(Math.floor(size * rawPrice * scale)).toString();
     }
 
     // EIP-712 signing uses uint8 side (0=BUY, 1=SELL)
     const eip712Side = side === 'BUY' ? 0 : 1;
     const orderData = {
-      salt, maker: this.address, signer: this.address, taker: ZERO_ADDRESS,
+      salt, maker: this.address, signer: this.signerAddress, taker: ZERO_ADDRESS,
       tokenId, makerAmount, takerAmount, expiration, nonce,
       feeRateBps, side: eip712Side, signatureType: SIGNATURE_TYPE,
     };
 
     const signature = await this.wallet.signTypedData(ORDER_DOMAIN_DATA, ORDER_TYPE, orderData);
     
-    // CLOB API payload format (side as string, owner = API key)
-    // Java code sends salt as LONG (number), not string
+    // CLOB API payload format
     const orderPayload = {
       order: {
-        salt: Number(salt), // must be number, not string
-        maker: this.address, signer: this.address, taker: ZERO_ADDRESS,
+        salt: Number(salt),
+        maker: this.address, signer: this.signerAddress, taker: ZERO_ADDRESS,
         tokenId, makerAmount, takerAmount, expiration, nonce,
-        feeRateBps, side: side, // 'BUY' or 'SELL' string for API
+        feeRateBps, side: side,
         signatureType: SIGNATURE_TYPE,
         signature,
       },
@@ -280,10 +303,10 @@ class PolymarketTrader {
     
     if (result) {
       const orderId = result.id || result.orderID || (result.order && result.order.id) || 'ok';
-      this.logFn(`📤 ${side} ${size}sh@$${price.toFixed(4)} id:${orderId.toString().substring(0,12)}`);
+      this.logFn(`📤 ${side} ${size}sh@$${rawPrice.toFixed(2)} id:${orderId.toString().substring(0,12)}`);
       return result;
     }
-    this.logFn(`❌ Order failed: ${side} ${size}sh@$${price.toFixed(4)}`);
+    this.logFn(`❌ Order failed: ${side} ${size}sh@$${rawPrice.toFixed(2)}`);
     return null;
   }
 
@@ -313,6 +336,36 @@ class PolymarketTrader {
     const headers = this.l2Headers('GET', path);
     const result = await this.fetch(`${CLOB_API}${path}`, { headers });
     return result && result.data ? result.data : [];
+  }
+
+  // ── Get balance via CLOB /balance-allowance (authenticated, no RPC needed) ──
+  async getBalanceAllowance() {
+    if (!this.apiKey) return -1;
+    try {
+      const headers = this.l2Headers('GET', '/balance-allowance');
+      const result = await this.fetch(`${CLOB_API}/balance-allowance`, { headers });
+      if (result && typeof result.balance !== 'undefined') {
+        const bal = Number(result.balance) / 1e6;
+        this.logFn(`💰 CLOB balance: $${bal.toFixed(2)}`);
+        return bal;
+      }
+      if (result && typeof result.allowance !== 'undefined' && typeof result.balance === 'undefined') {
+        const bal = Number(result.allowance) / 1e6;
+        this.logFn(`💰 CLOB allowance: $${bal.toFixed(2)}`);
+        return bal;
+      }
+      return -1;
+    } catch(e) {
+      this.logFn(`⚠️ Balance-allowance error: ${e.message.substring(0,60)}`);
+      return -1;
+    }
+  }
+
+  // ── Cancel all open orders for a token ──
+  async cancelAllOrders(tokenId) {
+    const body = JSON.stringify({ token_id: tokenId });
+    const headers = this.l2Headers('DELETE', '/cancel-all', body);
+    return this.fetch(`${CLOB_API}/cancel-all`, { method: 'DELETE', headers, body });
   }
 }
 

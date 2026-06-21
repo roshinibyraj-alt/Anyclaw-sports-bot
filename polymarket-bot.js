@@ -11,7 +11,7 @@ const CLOB = 'https://clob.polymarket.com';
 const SCALP_SIZE = 10;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
-const FEE_RATE = 0; // maker fees = 0 on Polymarket for limit orders
+// Fee rate is fetched dynamically from CLOB for each market
 
 // MUST have private key - no simulation mode
 if (!process.env.POLYMARKET_PRIVATE_KEY) {
@@ -482,7 +482,8 @@ function buildSnapshot() {
   return {
     peakEquity: fl2(peakEquity), maxDrawdown, drawdown: dd,
     windowResults: windowResults.slice(-20).reverse(),
-    balance: fl2(balance), equity, initialEquity,
+    balance: fl2(balance), equity,
+    initialEquity: typeof initialEquity === 'number' ? fl2(initialEquity) : 0,
     totalPnl: fl4(totalRealizedPnl), totalFees: fl4(totalFees),
     wins, losses, totalTrades: wins + losses,
     winRate: wins + losses > 0 ? fl4(wins / (wins + losses) * 100) : 0,
@@ -540,22 +541,36 @@ async function start(emit, logEmit) {
     process.exit(1);
   }
   
-  // Get real balance
+  // Get real balance – try CLOB authenticated endpoint first, then RPC fallback
   try {
-    const realBalance = await Promise.race([
-      trader.getBalance(),
-      new Promise(r => setTimeout(() => r(-1), 8000))
+    let realBalance = await Promise.race([
+      trader.getBalanceAllowance(),
+      new Promise(r => setTimeout(() => r(-2), 6000))
     ]);
+    if (realBalance === -2) realBalance = -1; // timeout
+    if (realBalance < 0) {
+      // fallback: RPC
+      realBalance = await Promise.race([
+        trader.getBalance(),
+        new Promise(r => setTimeout(() => r(-1), 8000))
+      ]);
+    }
     if (realBalance > 0) {
       balance = realBalance;
       initialEquity = realBalance;
       peakEquity = realBalance;
-      logFn('💰 On-chain balance: $' + fl2(realBalance));
+      logFn('💰 Real balance: $' + fl2(realBalance));
     } else {
-      logFn('💰 On-chain balance: $0 (or RPC timeout)');
+      balance = 0;
+      initialEquity = 0;
+      peakEquity = 0;
+      logFn('💰 Balance: $0 (no funds or RPC unavailable)');
     }
   } catch(e) {
-    logFn('💰 Balance fetch failed, showing $0');
+    balance = 0;
+    initialEquity = 0;
+    peakEquity = 0;
+    logFn('💰 Balance fetch error, showing $0');
   }
 
   logFn('🔴 LIVE TRADING MODE | Capital: $' + fl2(balance));
@@ -563,14 +578,20 @@ async function start(emit, logEmit) {
   await tick();
   setInterval(tick, 1000);
   
-  // Log balance sync every 60s
+  // Log balance sync every 60s – use CLOB endpoint
   setInterval(async () => {
     try {
-      const rb = await Promise.race([
-        trader.getBalance(),
-        new Promise(r => setTimeout(() => r(-1), 6000))
+      let rb = await Promise.race([
+        trader.getBalanceAllowance(),
+        new Promise(r => setTimeout(() => r(-2), 6000))
       ]);
-      if (rb >= 0 && rb !== balance) {
+      if (rb === -2 || rb < 0) {
+        rb = await Promise.race([
+          trader.getBalance(),
+          new Promise(r => setTimeout(() => r(-1), 6000))
+        ]);
+      }
+      if (rb >= 0 && Math.abs(rb - balance) > 0.01) {
         balance = rb;
         logFn('💰 Balance synced: $' + fl2(rb));
       }

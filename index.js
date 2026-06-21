@@ -1,4 +1,18 @@
 'use strict';
+
+// ── Proxy setup (must be first — patches globalThis.fetch before any bot code) ──
+const _proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+if (_proxyUrl) {
+  try {
+    const { ProxyAgent, fetch: _uFetch } = require('undici');
+    const _agent = new ProxyAgent({ uri: _proxyUrl, requestTls: { rejectUnauthorized: false } });
+    globalThis.fetch = (url, opts = {}) => _uFetch(url, { ...opts, dispatcher: _agent });
+    console.log('🌐 Proxy active:', _proxyUrl.replace(/:[^:@]*@/, ':***@'));
+  } catch(e) {
+    console.log('⚠️ Proxy setup error:', e.message);
+  }
+}
+
 const express = require('express');
 const http = require('http');
 const path = require('path');

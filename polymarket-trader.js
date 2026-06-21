@@ -298,11 +298,13 @@ class PolymarketTrader {
     // nonce=0: official client default; used only for onchain cancellations, not API ordering
     const nonce = '0';
     const scale = Math.pow(10, COLLATERAL_DECIMALS);
-    // feeRateBps must be "0": fees are charged by the protocol separately, not embedded in the order.
-    // Embedding the fetched fee rate causes a signature mismatch ("invalid order version").
-    const feeRateBps = '0';
-    // Get dynamic tick size for this market
-    const tickSize = await this.getTickSize(tokenId);
+    // feeRateBps: MUST match the market's actual fee rate (server validates this against signed order)
+    // Official client always sends as a string. BTC 15m markets use 1000 bps.
+    const [rawFeeRate, tickSize] = await Promise.all([
+      this.getFeeRate(tokenId),
+      this.getTickSize(tokenId),
+    ]);
+    const feeRateBps = String(rawFeeRate);
     
     // Calculate maker/taker amounts (USDC has 6 decimals)
     // For BUY: maker pays cost (shares * price), taker gives shares

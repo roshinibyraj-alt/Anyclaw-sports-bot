@@ -13,6 +13,8 @@ const KILL_SWITCH = true; // set false to re-enable trading
 const SCALP_SIZE = 6;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
+const MAX_POSITION = 30;   // max shares held per side before pausing buys
+const MIN_BALANCE = 5;     // stop placing new orders below this USDC balance
 // Fee rate is fetched dynamically from CLOB for each market
 
 // MUST have private key - no simulation mode
@@ -299,11 +301,13 @@ function runScalp(m) {
   const b = book(m);
   const SIZE = SCALP_SIZE; // 6
 
+  const canBuy = balance >= MIN_BALANCE;
+
   // ── UP BUY: cancel previous, place fresh at bid − offset ──
   cancelTracked(ss.upBuyOrderId);
   ss.upBuyOrderId = null;
   const upBuyPrice = fl4(b.upBid - SCALP_OFFSET);
-  if (upBuyPrice > 0.01) {
+  if (canBuy && ss.upHeld < MAX_POSITION && upBuyPrice > 0.01) {
     placeOrder(m.upTokenId, 'BUY', upBuyPrice, SIZE, m.slug, 'up_buy').then(oid => {
       if (oid) ss.upBuyOrderId = oid;
     });
@@ -323,7 +327,7 @@ function runScalp(m) {
   cancelTracked(ss.dnBuyOrderId);
   ss.dnBuyOrderId = null;
   const dnBuyPrice = fl4(b.downBid - SCALP_OFFSET);
-  if (dnBuyPrice > 0.01) {
+  if (canBuy && ss.downHeld < MAX_POSITION && dnBuyPrice > 0.01) {
     placeOrder(m.downTokenId, 'BUY', dnBuyPrice, SIZE, m.slug, 'dn_buy').then(oid => {
       if (oid) ss.dnBuyOrderId = oid;
     });
@@ -578,7 +582,7 @@ async function start(emit, logEmit) {
   logFn(`🔴 LIVE TRADING MODE | Capital: $${fl2(balance)}${funderAddr ? ' via Deposit Wallet' : ''}`);
   await discoverMarkets();
   await tick();
-  setInterval(tick, 1000);
+  setInterval(tick, 15000);
   
   // Sync balance every 60s – prioritize on-chain (handles PUSD)
   setInterval(async () => {

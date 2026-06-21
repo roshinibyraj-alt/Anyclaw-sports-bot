@@ -159,28 +159,56 @@ async function fetchClob() {
       const openOrders = await trader.getOpenOrders();
       const openIds = new Set((openOrders || []).map(o => o.id));
       for (const [id, po] of Object.entries(pendingOrders)) {
-        if (po.status === 'pending' && !openIds.has(id)) {
-          // Order was filled or cancelled
-          po.status = 'filled';
-          logFn(`✅ ORDER FILLED ${po.side} ${po.shares}sh@$${po.price}`);
-          // Update held shares
-          for (const ss of Object.values(strategyState)) {
-            if (ss.slug === po.slug) {
-              if (po.side === 'UP') {
-                if (po.dir === 'buy') { ss.upHeld += po.shares; ss.baseCost = fl2(ss.baseCost + po.shares * po.price); }
-                else { ss.upHeld -= po.shares; }
-              } else {
-                if (po.dir === 'buy') { ss.downHeld += po.shares; ss.baseCost = fl2(ss.baseCost + po.shares * po.price); }
-                else { ss.downHeld -= po.shares; }
-              }
-            }
-          }
-          // Update balance
-          if (po.dir === 'sell') {
-            const proceeds = po.shares * po.price;
+        if (po.status === 'cancelling' && !openIds.has(id)) {
+          po.status = 'cancelled';
+          continue;
+        }
+        if (po.status !== 'pending') continue;
+        if (openIds.has(id)) continue;
+        // Disappeared from open orders → filled
+        po.status = 'filled';
+        const ss = strategyState[po.slug];
+        if (ss) {
+          if (po.dir === 'up_buy') {
+            ss.upHeld += po.shares;
+            ss.baseCost = fl2(ss.baseCost + po.shares * po.price);
+            logFn(`✅ FILLED BUY↑ ${po.shares}sh@$${po.price} held:${ss.upHeld}`);
+          } else if (po.dir === 'dn_buy') {
+            ss.downHeld += po.shares;
+            ss.baseCost = fl2(ss.baseCost + po.shares * po.price);
+            logFn(`✅ FILLED BUY↓ ${po.shares}sh@$${po.price} held:${ss.downHeld}`);
+          } else if (po.dir === 'up_sell') {
+            const proceeds = fl2(po.shares * po.price);
+            ss.upHeld = Math.max(0, ss.upHeld - po.shares);
             balance = fl2(balance + proceeds);
-            totalRealizedPnl = fl2(totalRealizedPnl + proceeds - (po.buyCost || 0));
+            ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
+            ss.scalpCount++;
+            logFn(`✅ FILLED SELL↑ ${po.shares}sh@$${po.price} +$${proceeds} held:${ss.upHeld}`);
+          } else if (po.dir === 'dn_sell') {
+            const proceeds = fl2(po.shares * po.price);
+            ss.downHeld = Math.max(0, ss.downHeld - po.shares);
+            balance = fl2(balance + proceeds);
+            ss.scalpPnl = fl2(ss.scalpPnl + proceeds);
+            ss.scalpCount++;
+            logFn(`✅ FILLED SELL↓ ${po.shares}sh@$${po.price} +$${proceeds} held:${ss.downHeld}`);
+          } else if (po.dir === 'up_sell_tp') {
+            balance = fl2(balance + po.shares * po.price);
+            ss.upHeld = Math.max(0, ss.upHeld - po.shares);
+            ss.tpCount++;
+            logFn(`💰 TP↑ filled ${po.shares}sh@$${po.price}`);
+          } else if (po.dir === 'dn_sell_tp') {
+            balance = fl2(balance + po.shares * po.price);
+            ss.downHeld = Math.max(0, ss.downHeld - po.shares);
+            ss.tpCount++;
+            logFn(`💰 TP↓ filled ${po.shares}sh@$${po.price}`);
           }
+        }
+      }
+      // Clean up old cancelled/filled entries
+      for (const [id, po] of Object.entries(pendingOrders)) {
+        if ((po.status === 'filled' || po.status === 'cancelled') &&
+            Date.now() - po.time > 120000) {
+          delete pendingOrders[id];
         }
       }
     } catch(e) { /* best-effort fill check */ }
@@ -210,12 +238,12 @@ function tryEnter(m) {
   ss.entryBalance = balance;
   ss.phase = 'scalp';
   ss.upHeld = 0; ss.downHeld = 0;
-  ss.upBuyOrder = null; ss.upSellOrder = null;
-  ss.upPendingSell = [];
-  ss.downBuyOrder = null; ss.downSellOrder = null;
-  ss.downPendingSell = [];
+  // active order IDs tracked per side
+  ss.upBuyOrderId = null; ss.upSellOrderId = null;
+  ss.dnBuyOrderId = null; ss.dnSellOrderId = null;
+  // endgame TP sell order IDs
+  ss.upTpOrderId = null; ss.dnTpOrderId = null;
   ss.scalpPnl = 0; ss.scalpCount = 0;
-  ss.scalpCycles = [];
   ss.baseCost = 0;
   ss.tpCount = 0; ss.resolvePnl = 0;
   logFn(`🟢 ENTER ${m.asset.toUpperCase()} ${m.windowType} | UP:${fl4(b.upMid)} DN:${fl4(b.downMid)} remaining:${secs}s`);
@@ -251,103 +279,82 @@ async function placeOrder(tokenId, side, price, shares, slug, dir) {
   }
 }
 
-// ── Scalp ──
+// ── Cancel a tracked order, mark it so fill-detection ignores it ──
+function cancelTracked(orderId) {
+  if (!orderId) return;
+  if (pendingOrders[orderId]) pendingOrders[orderId].status = 'cancelling';
+  trader.cancelOrder(orderId).catch(() => {});
+}
+
+// ── Scalp — every tick: replace BUY + replace SELL if holding ──
 function runScalp(m) {
   const ss = strategyState[m.slug];
   if (!ss || !ss.entered || ss.phase !== 'scalp' || !m.hasClob) return;
   const secs = m.secondsToEnd;
   if (secs <= 0) return;
-
-  const scalpEnd = 180;
-  if (secs <= scalpEnd) { endScalpPhase(m, ss); return; }
+  if (secs <= 180) { endScalpPhase(m, ss); return; }
 
   const b = book(m);
-  const SIZE = SCALP_SIZE;
+  const SIZE = SCALP_SIZE; // 6
 
-  // === UP side ===
+  // ── UP BUY: cancel previous, place fresh at bid − offset ──
+  cancelTracked(ss.upBuyOrderId);
+  ss.upBuyOrderId = null;
   const upBuyPrice = fl4(b.upBid - SCALP_OFFSET);
-  if (upBuyPrice > 0.01 && !ss.upBuyOrder) {
-    ss.upBuyOrder = { id: id8(), price: upBuyPrice, shares: SIZE, tickCount: 0 };
-    // Place real limit order
-    placeOrder(m.upTokenId, 'BUY', upBuyPrice, SIZE, m.slug, 'buy').then(oid => {
-      if (oid) ss.upBuyOrder.orderId = oid;
+  if (upBuyPrice > 0.01) {
+    placeOrder(m.upTokenId, 'BUY', upBuyPrice, SIZE, m.slug, 'up_buy').then(oid => {
+      if (oid) ss.upBuyOrderId = oid;
     });
   }
-  
-  // Check if pending buy was filled via our order check in fetchClob
-  // and reset for next cycle
 
-  // Check for pending sell fills
-  if (ss.upPendingSell.length > 0) {
-    for (let i = ss.upPendingSell.length - 1; i >= 0; i--) {
-      const o = ss.upPendingSell[i];
-      if (o.filled) {
-        const proceeds = fl2(o.shares * o.price);
-        const pnl = fl2((o.price - o.buyPrice) * o.shares);
-        balance = fl2(balance + proceeds);
-        ss.scalpPnl = fl2(ss.scalpPnl + pnl);
-        ss.scalpCount++;
-        ss.scalpCycles.push({buyPrice:o.buyPrice, sellPrice:o.price, shares:o.shares, pnl, side:'UP', time:Date.now()});
-        totalRealizedPnl = fl2(totalRealizedPnl + pnl);
-        if (pnl >= 0) wins++; else losses++;
-        ss.upHeld -= o.shares;
-        logFn(`🔴 SELL↑ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} PnL:$${fl2(pnl)}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'UP',price:o.price,shares:o.shares,cost:fl2(o.buyPrice*o.shares),pnl,fee:0,reason:'SCALP',time:Date.now()});
-        if(trades.length>1000)trades=trades.slice(-1000);
-        ss.upPendingSell.splice(i, 1);
-      }
-    }
+  // ── UP SELL: if holding, cancel previous, place fresh at ask + offset ──
+  cancelTracked(ss.upSellOrderId);
+  ss.upSellOrderId = null;
+  if (ss.upHeld >= SIZE) {
+    const upSellPrice = fl4(Math.min(b.upAsk + SCALP_OFFSET, 0.98));
+    placeOrder(m.upTokenId, 'SELL', upSellPrice, SIZE, m.slug, 'up_sell').then(oid => {
+      if (oid) ss.upSellOrderId = oid;
+    });
   }
 
-  // === DOWN side (mirror) ===
+  // ── DN BUY: cancel previous, place fresh at bid − offset ──
+  cancelTracked(ss.dnBuyOrderId);
+  ss.dnBuyOrderId = null;
   const dnBuyPrice = fl4(b.downBid - SCALP_OFFSET);
-  if (dnBuyPrice > 0.01 && !ss.downBuyOrder) {
-    ss.downBuyOrder = { id: id8(), price: dnBuyPrice, shares: SIZE, tickCount: 0 };
-    placeOrder(m.downTokenId, 'BUY', dnBuyPrice, SIZE, m.slug, 'buy').then(oid => {
-      if (oid) ss.downBuyOrder.orderId = oid;
+  if (dnBuyPrice > 0.01) {
+    placeOrder(m.downTokenId, 'BUY', dnBuyPrice, SIZE, m.slug, 'dn_buy').then(oid => {
+      if (oid) ss.dnBuyOrderId = oid;
     });
   }
 
-  if (ss.downPendingSell.length > 0) {
-    for (let i = ss.downPendingSell.length - 1; i >= 0; i--) {
-      const o = ss.downPendingSell[i];
-      if (o.filled) {
-        const proceeds = fl2(o.shares * o.price);
-        const pnl = fl2((o.price - o.buyPrice) * o.shares);
-        balance = fl2(balance + proceeds);
-        ss.scalpPnl = fl2(ss.scalpPnl + pnl);
-        ss.scalpCount++;
-        ss.scalpCycles.push({buyPrice:o.buyPrice, sellPrice:o.price, shares:o.shares, pnl, side:'DOWN', time:Date.now()});
-        totalRealizedPnl = fl2(totalRealizedPnl + pnl);
-        if (pnl >= 0) wins++; else losses++;
-        ss.downHeld -= o.shares;
-        logFn(`🔴 SELL↓ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} PnL:$${fl2(pnl)}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'DOWN',price:o.price,shares:o.shares,cost:fl2(o.buyPrice*o.shares),pnl,fee:0,reason:'SCALP',time:Date.now()});
-        if(trades.length>1000)trades=trades.slice(-1000);
-        ss.downPendingSell.splice(i, 1);
-      }
-    }
+  // ── DN SELL: if holding, cancel previous, place fresh at ask + offset ──
+  cancelTracked(ss.dnSellOrderId);
+  ss.dnSellOrderId = null;
+  if (ss.downHeld >= SIZE) {
+    const dnSellPrice = fl4(Math.min(b.downAsk + SCALP_OFFSET, 0.98));
+    placeOrder(m.downTokenId, 'SELL', dnSellPrice, SIZE, m.slug, 'dn_sell').then(oid => {
+      if (oid) ss.dnSellOrderId = oid;
+    });
   }
 }
 
 function endScalpPhase(m, ss) {
   ss.phase = 'endgame';
-  ss.upBuyOrder = null; ss.downBuyOrder = null;
-  // Cancel pending buy orders
-  for (const po of Object.values(pendingOrders)) {
-    if (po.status === 'pending' && po.slug === m.slug) {
-      trader.cancelOrder(po.id).catch(() => {});
-      po.status = 'cancelled';
-    }
+  // Cancel all active scalp orders
+  cancelTracked(ss.upBuyOrderId);  ss.upBuyOrderId = null;
+  cancelTracked(ss.upSellOrderId); ss.upSellOrderId = null;
+  cancelTracked(ss.dnBuyOrderId);  ss.dnBuyOrderId = null;
+  cancelTracked(ss.dnSellOrderId); ss.dnSellOrderId = null;
+  // Place TP sell at 0.99 for all held shares
+  if (ss.upHeld > 0 && !ss.upTpOrderId) {
+    placeOrder(m.upTokenId, 'SELL', TP_PRICE, ss.upHeld, m.slug, 'up_sell_tp').then(oid => {
+      if (oid) ss.upTpOrderId = oid;
+    });
   }
-  // Place TP sell orders
-  if (ss.upHeld > 0 && !ss.upSellOrder) {
-    ss.upSellOrder = { id: id8(), price: TP_PRICE, shares: ss.upHeld };
-    placeOrder(m.upTokenId, 'SELL', TP_PRICE, ss.upHeld, m.slug, 'sell');
-  }
-  if (ss.downHeld > 0 && !ss.downSellOrder) {
-    ss.downSellOrder = { id: id8(), price: TP_PRICE, shares: ss.downHeld };
-    placeOrder(m.downTokenId, 'SELL', TP_PRICE, ss.downHeld, m.slug, 'sell');
+  if (ss.downHeld > 0 && !ss.dnTpOrderId) {
+    placeOrder(m.downTokenId, 'SELL', TP_PRICE, ss.downHeld, m.slug, 'dn_sell_tp').then(oid => {
+      if (oid) ss.dnTpOrderId = oid;
+    });
   }
   logFn(`🛑 ENDGAME ${m.asset.toUpperCase()} ${m.windowType} | Scalps:${ss.scalpCount} Held:↑${ss.upHeld}↓${ss.downHeld} TP@$${TP_PRICE}`);
 }
@@ -355,22 +362,7 @@ function endScalpPhase(m, ss) {
 function runEndgame(m) {
   const ss = strategyState[m.slug];
   if (!ss || !ss.entered || ss.phase !== 'endgame' || !m.hasClob) return;
-  const secs = m.secondsToEnd;
-  if (secs < -10) return;
-
-  // Check TP fills via pendingOrders
-  for (const po of Object.values(pendingOrders)) {
-    if (po.status === 'filled' && po.slug === m.slug && po.dir === 'sell') {
-      if (po.side === 'UP' && ss.upSellOrder) {
-        logFn(`💰 TP↑ filled ${po.shares}sh@$${po.price}`);
-        ss.upHeld = 0; ss.upSellOrder = null; ss.tpCount++;
-      }
-      if (po.side === 'DOWN' && ss.downSellOrder) {
-        logFn(`💰 TP↓ filled ${po.shares}sh@$${po.price}`);
-        ss.downHeld = 0; ss.downSellOrder = null; ss.tpCount++;
-      }
-    }
-  }
+  // Fill detection is handled in fetchClob for 'up_sell_tp' / 'dn_sell_tp' dirs
 }
 
 function resolve(m) {

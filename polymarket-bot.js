@@ -602,10 +602,18 @@ async function start(emit, logEmit) {
             peakEquity = realBalance;
             logFn('💰 On-chain balance: $' + fl2(realBalance));
           } else {
-            logFn('💰 Using saved balance: $' + fl2(balance) + ' (RPC timeout)');
+            // RPC timeout — assume $0 (no deposit)
+            balance = 0;
+            initialEquity = 0;
+            peakEquity = 0;
+            logFn('💰 RPC timeout — wallet shows $0');
           }
         } catch(e) {
-          logFn('💰 Using saved balance: $' + fl2(balance) + ' (RPC fail)');
+          // RPC failed — wallet has $0 (no deposit), show true balance
+          balance = 0;
+          initialEquity = 0;
+          peakEquity = 0;
+          logFn('💰 Balance fetch failed: wallet shows $0 (RPC err: ' + e.message.substring(0,60) + ')');
         }
       } else {
         logFn('⚠️ Auth failed, running in SIMULATION mode');
@@ -651,6 +659,25 @@ async function setTradingMode(mode) {
       if (authed) {
         realTradingEnabled = true;
         logFn('✅ Switched to LIVE mode');
+        // Try to get real balance (non-blocking, best-effort)
+        try {
+          const rb = await Promise.race([
+            trader.getBalance(),
+            new Promise(r => setTimeout(() => r(-1), 6000))
+          ]);
+          if (rb > 0) {
+            balance = rb;
+            initialEquity = rb;
+            peakEquity = rb;
+            logFn('💰 On-chain balance: $' + fl2(rb));
+          } else {
+            balance = 0;
+            logFn('💰 Wallet balance: $0');
+          }
+        } catch(e) {
+          balance = 0;
+          logFn('💰 Balance check failed, showing $0');
+        }
         return { mode: 'LIVE', ok: true };
       } else {
         trader = null;

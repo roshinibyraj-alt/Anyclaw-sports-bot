@@ -158,19 +158,29 @@ class PolymarketTrader {
     }
   }
 
-  // ── USDC balance via Polygon RPC ──
+  // ── USDC balance via Polygon RPC (tries multiple endpoints) ──
   async getBalance() {
-    try {
-      // Use staticJsonRpcProvider approach - pass URL string directly
-      const provider = new ethers.JsonRpcProvider('https://polygon-rpc.com', 137, { staticNetwork: true });
-      const USDC = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-      const contract = new ethers.Contract(USDC, [
-        'function balanceOf(address) view returns (uint256)',
-        'function decimals() view returns (uint8)'
-      ], provider);
-      const bal = await contract.balanceOf(this.address);
-      return Number(bal) / 1e6;
-    } catch (e) { this.logFn('❌ Balance fetch: ' + e.message); }
+    const USDC = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+    const RPCS = [
+      'https://rpc-mainnet.maticvigil.com',
+      'https://rpc.ankr.com/polygon',
+      'https://polygon-mainnet.g.alchemy.com/v2/demo',
+      'https://polygon-rpc.com',
+    ];
+    for (const rpcUrl of RPCS) {
+      try {
+        const provider = new ethers.JsonRpcProvider(rpcUrl, 137, { staticNetwork: true });
+        const contract = new ethers.Contract(USDC, [
+          'function balanceOf(address) view returns (uint256)',
+          'function decimals() view returns (uint8)'
+        ], provider);
+        const bal = await contract.balanceOf(this.address);
+        return Number(bal) / 1e6;
+      } catch (_) {
+        // try next RPC
+      }
+    }
+    // All RPCs failed
     return 0;
   }
 

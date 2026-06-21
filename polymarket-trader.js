@@ -348,30 +348,37 @@ class PolymarketTrader {
   }
 
   // ── Cancel order ──
+  // DELETE /order signs the base path only (no query params in HMAC)
   async cancelOrder(orderId) {
+    const basePath = '/order';
     const body = JSON.stringify({ orderID: orderId });
-    const headers = this.l2Headers('DELETE', '/order', body);
-    const result = await this.fetch(`${CLOB_API}/order?id=${orderId}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body,
-    });
-    return result !== null;
+    const headers = this.l2Headers('DELETE', basePath, body);
+    try {
+      const result = await this.fetch(`${CLOB_API}${basePath}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body,
+      });
+      return result !== null;
+    } catch (_) { return false; }
   }
 
   // ── Get open orders ──
+  // HMAC signs base path without query params; filter by status=LIVE for open orders
   async getOpenOrders(tokenId) {
-    const path = tokenId ? `/data/orders?token_id=${tokenId}` : '/data/orders';
-    const headers = this.l2Headers('GET', path);
-    const result = await this.fetch(`${CLOB_API}${path}`, { headers });
+    const basePath = '/data/orders';
+    const qs = tokenId ? `token_id=${tokenId}&status=LIVE` : 'status=LIVE';
+    const headers = this.l2Headers('GET', basePath);
+    const result = await this.fetch(`${CLOB_API}${basePath}?${qs}`, { headers });
     return Array.isArray(result?.data) ? result.data : (Array.isArray(result) ? result : []);
   }
 
-  // ── Get fills ──
+  // ── Get filled orders ──
   async getFills(tokenId) {
-    const path = `/data/orders?token_id=${tokenId}`;
-    const headers = this.l2Headers('GET', path);
-    const result = await this.fetch(`${CLOB_API}${path}`, { headers });
+    const basePath = '/data/orders';
+    const qs = `token_id=${tokenId}&status=MATCHED`;
+    const headers = this.l2Headers('GET', basePath);
+    const result = await this.fetch(`${CLOB_API}${basePath}?${qs}`, { headers });
     return result && result.data ? result.data : [];
   }
 
@@ -402,11 +409,18 @@ class PolymarketTrader {
     }
   }
 
-  // ── Cancel all open orders for a token ──
+  // ── Cancel all open orders (optionally filtered by token) ──
   async cancelAllOrders(tokenId) {
-    const body = JSON.stringify({ token_id: tokenId });
-    const headers = this.l2Headers('DELETE', '/cancel-all', body);
-    return this.fetch(`${CLOB_API}/cancel-all`, { method: 'DELETE', headers, body });
+    const basePath = '/cancel-all';
+    const body = tokenId ? JSON.stringify({ token_id: tokenId }) : '{}';
+    const headers = this.l2Headers('DELETE', basePath, body);
+    try {
+      return await this.fetch(`${CLOB_API}${basePath}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body,
+      });
+    } catch (_) { return null; }
   }
 }
 

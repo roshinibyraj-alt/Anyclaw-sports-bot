@@ -65,6 +65,7 @@ main{padding:8px;max-width:1200px;margin:0 auto}
   <div class="logo"><span class="dot on" id="dot"></span>ScalpBot</div>
   <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:#3fb95022;color:#3fb950;border:1px solid #3fb95066">🔴 LIVE</span>
   <div class="stats" id="headerStats"></div>
+  <span onclick="refreshBalance()" style="font-size:9px;color:#8b949e;cursor:pointer;padding:2px 6px;border:1px solid #30363d;border-radius:4px">⟳ Bal</span>
 </div></header>
 <main>
 <div id="noteSection"></div>
@@ -227,6 +228,17 @@ function render(d){
   var up=d.uptime||0;
   var upStr=up>3600?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':up>60?Math.floor(up/60)+'m '+(up%60)+'s':up+'s';
   document.getElementById('footer').innerHTML='Uptime: '+upStr+' | Peak: $'+fmt2(d.peakEquity||0)+' | MaxDD: '+(d.maxDrawdown||0).toFixed(2)+'% | Windows: '+(d.windowResults||[]).length+' | v10';
+}
+
+function refreshBalance(){
+  var btn=document.querySelector('[onclick*="refreshBalance"]');
+  if(btn){btn.textContent='⟳...';btn.style.opacity='0.5';}
+  fetch('/api/snapshot').then(function(r){return r.json();}).then(function(d){
+    if(btn){btn.textContent='⟳ Bal';btn.style.opacity='1';}
+    if(d)render(d);
+  }).catch(function(){
+    if(btn){btn.textContent='⟳ Bal';btn.style.opacity='1';}
+  });
 }
 
 socket.on('snapshot',function(d){if(d)render(d);});

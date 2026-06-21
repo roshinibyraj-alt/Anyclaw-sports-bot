@@ -170,6 +170,8 @@ class PolymarketTrader {
     const RPCS = [];
     if (rpcEnv) RPCS.push(rpcEnv);
     RPCS.push(
+      'https://polygon.llamarpc.com',
+      'https://1rpc.io/matic',
       'https://rpc-mainnet.maticvigil.com',
       'https://rpc.ankr.com/polygon',
       'https://polygon-mainnet.g.alchemy.com/v2/demo',

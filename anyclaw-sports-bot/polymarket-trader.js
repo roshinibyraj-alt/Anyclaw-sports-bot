@@ -4,14 +4,16 @@ const ethers = require('ethers');
 const crypto = require('crypto');
 
 const CHAIN_ID = 137;
-const EXCHANGE_CONTRACT = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+// V2 protocol: new exchange contracts (ts-sdk / @polymarket/client)
+const STANDARD_EXCHANGE = '0xE111180000d2663C0091e4f400237545B87B996B';
+const NEG_RISK_EXCHANGE  = '0xe2222d279d744050d28e00520010520000310F59';
 const CLOB_API = 'https://clob.polymarket.com';
 const COLLATERAL_DECIMALS = 6;
-const MIN_SHARES = 5; // Polymarket CLOB minimum order size
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const MIN_SHARES = 5;
 const PUSD_TOKEN = '0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb';
 const USDC_TOKEN_OLD = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 const USDC_TOKEN_NEW = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+const BYTES32_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000';
 // Default to Poly Proxy (1) when FUNDER_ADDRESS is set, else EOA (0)
 const hasProxyWallet = !!process.env.FUNDER_ADDRESS;
 const SIGNATURE_TYPE = parseInt(process.env.SIGNATURE_TYPE || (hasProxyWallet ? '1' : '0'), 10);
@@ -33,29 +35,29 @@ const AUTH_TYPE = {
   ]
 };
 
-const ORDER_DOMAIN = {
-  EIP712Domain: [
-    { name: 'name', type: 'string' },
-    { name: 'version', type: 'string' },
-    { name: 'chainId', type: 'uint256' },
-    { name: 'verifyingContract', type: 'address' },
-  ]
-};
-const ORDER_DOMAIN_DATA = { name: 'Polymarket CTF Exchange', version: '1', chainId: CHAIN_ID, verifyingContract: EXCHANGE_CONTRACT };
+// V2 EIP-712 domain — version "2", verifyingContract is market-dependent
+function getOrderDomainData(negRisk) {
+  return {
+    name: 'Polymarket CTF Exchange',
+    version: '2',
+    chainId: CHAIN_ID,
+    verifyingContract: negRisk ? NEG_RISK_EXCHANGE : STANDARD_EXCHANGE,
+  };
+}
+// V2 Order struct — taker/expiration/nonce/feeRateBps removed; timestamp/metadata/builder added
 const ORDER_TYPE = {
   Order: [
-    { name: 'salt', type: 'uint256' },
-    { name: 'maker', type: 'address' },
-    { name: 'signer', type: 'address' },
-    { name: 'taker', type: 'address' },
-    { name: 'tokenId', type: 'uint256' },
-    { name: 'makerAmount', type: 'uint256' },
-    { name: 'takerAmount', type: 'uint256' },
-    { name: 'expiration', type: 'uint256' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'feeRateBps', type: 'uint256' },
-    { name: 'side', type: 'uint8' },
-    { name: 'signatureType', type: 'uint8' },
+    { name: 'salt',          type: 'uint256' },
+    { name: 'maker',         type: 'address' },
+    { name: 'signer',        type: 'address' },
+    { name: 'tokenId',       type: 'uint256' },
+    { name: 'makerAmount',   type: 'uint256' },
+    { name: 'takerAmount',   type: 'uint256' },
+    { name: 'side',          type: 'uint8'   },
+    { name: 'signatureType', type: 'uint8'   },
+    { name: 'timestamp',     type: 'uint256' },
+    { name: 'metadata',      type: 'bytes32' },
+    { name: 'builder',       type: 'bytes32' },
   ]
 };
 
@@ -82,6 +84,7 @@ class PolymarketTrader {
     this.funderAddress = funderAddress || this.address;
     this._feeCache = {};
     this._tickSizeCache = {};
+    this._negRiskCache = {};
     this.logFn = () => {};
 
     if (funderAddress && funderAddress.toLowerCase() !== this.address.toLowerCase()) {
@@ -94,31 +97,9 @@ class PolymarketTrader {
     this.apiSecret = null;
     this.apiPassphrase = null;
     this.nonce = Math.floor(Math.random() * 100000);
-    this._clobClient = null;
   }
 
   setLogFn(fn) { this.logFn = fn; }
-
-  // ── Official ClobClient (lazy-init, ESM dynamic import) ──
-  async getClobClient() {
-    if (this._clobClient) return this._clobClient;
-    const { ClobClient, SignatureType } = await import('@polymarket/clob-client');
-    const wallet = this.wallet;
-    // Ethers v5 shim: official client checks typeof signer._signTypedData === 'function'
-    const signerShim = {
-      _signTypedData: async (domain, types, value) => wallet.signTypedData(domain, types, value),
-      getAddress: async () => wallet.address,
-    };
-    const funder = (this.funderAddress && this.funderAddress.toLowerCase() !== this.signerAddress.toLowerCase())
-      ? this.funderAddress : undefined;
-    this._clobClient = new ClobClient(
-      CLOB_API, CHAIN_ID, signerShim,
-      { key: this.apiKey, secret: this.apiSecret, passphrase: this.apiPassphrase },
-      SignatureType.EOA,
-      funder,
-    );
-    return this._clobClient;
-  }
 
   defaultHeaders() {
     return {
@@ -314,6 +295,19 @@ class PolymarketTrader {
     return 0.01; // fallback default
   }
 
+  // ── Fetch neg_risk flag for a token (cached) ──
+  async getNegRisk(tokenId) {
+    const cached = this._negRiskCache[tokenId];
+    if (cached && Date.now() - cached.ts < 600000) return cached.negRisk;
+    try {
+      const data = await this.fetch(`${CLOB_API}/markets/${tokenId}`);
+      const negRisk = !!(data && data.neg_risk);
+      this._negRiskCache[tokenId] = { negRisk, ts: Date.now() };
+      return negRisk;
+    } catch (_) { /* ignore */ }
+    return false; // BTC 15m markets are always non-neg-risk
+  }
+
   // ── Get midpoint price (public, no auth) ──
   async getMidpoint(tokenId) {
     const data = await this.fetch(`${CLOB_API}/midpoint?token_id=${tokenId}`);
@@ -336,46 +330,100 @@ class PolymarketTrader {
       return null;
     }
 
-    // Use official @polymarket/clob-client directly — guaranteed identical to Polymarket's expectation
-    const client = await this.getClobClient();
-
-    // Snap price to tick size first (same as our manual code did)
-    const tickSize = await this.getTickSize(tokenId);
+    // Fetch market context: tick size + neg_risk (determines which exchange contract to use)
+    const [tickSize, negRisk] = await Promise.all([
+      this.getTickSize(tokenId),
+      this.getNegRisk(tokenId),
+    ]);
+    const domainData = getOrderDomainData(negRisk);
+    const scale = Math.pow(10, COLLATERAL_DECIMALS);
     const rawPrice = Math.round(price / tickSize) * tickSize;
 
-    this.logFn(`🚀 Official ClobClient.createOrder: side=${side} price=${rawPrice} size=${size}`);
-
-    let order;
-    try {
-      order = await client.createOrder({ tokenID: tokenId, price: rawPrice, side, size });
-    } catch (e) {
-      this.logFn(`❌ createOrder error: ${e.message}`);
-      throw e;
+    // Amounts — V2 has no feeRateBps in the struct
+    let makerAmount, takerAmount;
+    if (side === 'BUY') {
+      const takerAmt = size;
+      let makerAmt = takerAmt * rawPrice;
+      if ((makerAmt * 1e5) % 1 !== 0) makerAmt = Math.floor(makerAmt * 1e5 + 0.5) / 1e5;
+      makerAmount = BigInt(Math.floor(makerAmt * scale)).toString();
+      takerAmount = BigInt(Math.floor(takerAmt * scale)).toString();
+    } else {
+      const makerAmt = size;
+      let takerAmt = makerAmt * rawPrice;
+      if ((takerAmt * 1e5) % 1 !== 0) takerAmt = Math.floor(takerAmt * 1e5 + 0.5) / 1e5;
+      makerAmount = BigInt(Math.floor(makerAmt * scale)).toString();
+      takerAmount = BigInt(Math.floor(takerAmt * scale)).toString();
     }
 
-    this.logFn(`🔏 Official order built: salt=${order.salt} fee=${order.feeRateBps} sig=${order.signature.substring(0,20)}...`);
-    this.logFn(`🔏 maker=${order.maker} signer=${order.signer} maker$=${order.makerAmount} taker#=${order.takerAmount}`);
+    // Salt: random 53-bit integer (capped so JSON number round-trip is lossless)
+    const saltBytes = crypto.randomBytes(8);
+    const saltBig = (BigInt('0x' + saltBytes.toString('hex'))) & ((1n << 53n) - 1n);
+    const salt = saltBig.toString();
 
-    let result;
-    try {
-      result = await client.postOrder(order, 'GTC');
-    } catch (e) {
-      this.logFn(`❌ postOrder error: ${e.message}`);
-      throw e;
-    }
+    // timestamp = Date.now() in milliseconds (as bigint for EIP712, as string for POST)
+    const timestamp = Date.now().toString();
+    const eip712Side = side === 'BUY' ? 0 : 1;
 
-    this.logFn(`📨 Official postOrder result: ${JSON.stringify(result).substring(0,300)}`);
+    // V2 EIP-712 order data — new struct
+    const orderData = {
+      salt:          saltBig,
+      maker:         this.funderAddress,
+      signer:        this.signerAddress,
+      tokenId:       BigInt(tokenId),
+      makerAmount:   BigInt(makerAmount),
+      takerAmount:   BigInt(takerAmount),
+      side:          eip712Side,
+      signatureType: SIGNATURE_TYPE,
+      timestamp:     BigInt(timestamp),
+      metadata:      BYTES32_ZERO,
+      builder:       BYTES32_ZERO,
+    };
 
-    if (result && result.error) {
-      throw new Error(typeof result.error === 'string' ? result.error : JSON.stringify(result.error));
-    }
-    if (result) {
-      const orderId = result.orderID || result.id || 'ok';
-      this.logFn(`📤 ${side} ${size}sh@$${rawPrice.toFixed(3)} id:${orderId.toString().substring(0,12)}`);
-      return result;
-    }
-    this.logFn(`❌ Order returned null: ${side} ${size}sh@$${rawPrice.toFixed(3)}`);
-    return null;
+    const signature = await this.wallet.signTypedData(domainData, ORDER_TYPE, orderData);
+
+    // Verify locally
+    const recovered = ethers.verifyTypedData(domainData, ORDER_TYPE, orderData, signature);
+    const sigValid = recovered.toLowerCase() === this.signerAddress.toLowerCase();
+    this.logFn(`🔏 V2 sig=${sigValid?'✅':'❌'} exchange=${domainData.verifyingContract.substring(0,10)} negRisk=${negRisk}`);
+    this.logFn(`🔏 salt=${salt} ts=${timestamp} maker$=${makerAmount} taker#=${takerAmount}`);
+
+    // V2 POST body — matches ts-sdk createSendOrderPayload exactly
+    const orderPayload = {
+      deferExec: false,
+      order: {
+        builder:       BYTES32_ZERO,
+        expiration:    '0',
+        maker:         this.funderAddress,
+        makerAmount,
+        metadata:      BYTES32_ZERO,
+        salt:          Number.parseInt(salt, 10),
+        side,
+        signature,
+        signatureType: SIGNATURE_TYPE,
+        signer:        this.signerAddress,
+        takerAmount,
+        timestamp,
+        tokenId,
+      },
+      orderType: 'GTC',
+      owner: this.apiKey,
+    };
+    const body = JSON.stringify(orderPayload);
+    this.logFn(`📦 POST /order: ${body.replace(signature, s => s.substring(0,16)+'...').substring(0,280)}`);
+
+    const headers = this.l2Headers('POST', '/order', body);
+    const allHeaders = { 'Content-Type': 'application/json', ...this.defaultHeaders(), ...headers };
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15000);
+    const r = await fetch(`${CLOB_API}/order`, { signal: ac.signal, method: 'POST', headers: allHeaders, body });
+    clearTimeout(timer);
+    const text = await r.text();
+    this.logFn(`📨 ORDER ${r.status}: ${text.substring(0, 200)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.substring(0, 200)}`);
+    const rawResult = JSON.parse(text);
+    const orderId = rawResult.orderID || rawResult.id || 'ok';
+    this.logFn(`📤 ${side} ${size}sh@$${rawPrice.toFixed(3)} id:${orderId.toString().substring(0,12)}`);
+    return rawResult;
   }
 
   // ── Cancel order ──

@@ -98,6 +98,14 @@ class PolymarketTrader {
 
   setLogFn(fn) { this.logFn = fn; }
 
+  defaultHeaders() {
+    return {
+      'User-Agent': '@polymarket/clob-client',
+      'Accept': '*/*',
+      'Connection': 'keep-alive',
+    };
+  }
+
   async fetch(url, opts = {}) {
     try {
       const ac = new AbortController();
@@ -322,34 +330,52 @@ class PolymarketTrader {
     };
 
     const signature = await this.wallet.signTypedData(ORDER_DOMAIN_DATA, ORDER_TYPE, orderData);
-    
-    // CLOB API payload format
+
+    // Verify signature locally before sending
+    const recovered = ethers.verifyTypedData(ORDER_DOMAIN_DATA, ORDER_TYPE, orderData, signature);
+    const sigValid = recovered.toLowerCase() === this.signerAddress.toLowerCase();
+    this.logFn(`🔏 sig=${sigValid?'✅':'❌'} maker=${this.funderAddress.substring(0,10)} signer=${this.signerAddress.substring(0,10)} sigType=${SIGNATURE_TYPE}`);
+    this.logFn(`🔏 tokenId=${tokenId.substring(0,20)}... side=${side} price=${rawPrice} maker$=${makerAmount} taker#=${takerAmount} fee=${feeRateBps}`);
+
+    // CLOB API payload — matches official @polymarket/clob-client orderToJson exactly
     const orderPayload = {
+      deferExec: false,
       order: {
-        salt: Number(salt),
+        salt: Number.parseInt(salt, 10),
         maker: this.funderAddress, signer: this.signerAddress, taker: ZERO_ADDRESS,
-        tokenId, makerAmount, takerAmount, expiration, nonce,
-        feeRateBps, side: side,
+        tokenId, makerAmount, takerAmount,
+        side: side,
+        expiration, nonce, feeRateBps,
         signatureType: SIGNATURE_TYPE,
         signature,
       },
       owner: this.apiKey,
       orderType: 'GTC',
-      deferExec: false,
+      postOnly: false,
     };
     const body = JSON.stringify(orderPayload);
+    this.logFn(`📦 POST /order body=${body.replace(signature, sig => sig.substring(0,20)+'...').substring(0,300)}`);
 
     const headers = this.l2Headers('POST', '/order', body);
-    const result = await this.fetch(`${CLOB_API}/order`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body,
-    });
+    let rawResult;
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 15000);
+      const allHeaders = { 'Content-Type': 'application/json', ...this.defaultHeaders(), ...headers };
+      const r = await fetch(`${CLOB_API}/order`, { signal: ac.signal, method: 'POST', headers: allHeaders, body });
+      clearTimeout(timer);
+      const text = await r.text();
+      this.logFn(`📨 ORDER response ${r.status}: ${text.substring(0,200)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.substring(0,200)}`);
+      rawResult = JSON.parse(text);
+    } catch (e) {
+      throw e;
+    }
     
-    if (result) {
-      const orderId = result.id || result.orderID || (result.order && result.order.id) || 'ok';
+    if (rawResult) {
+      const orderId = rawResult.id || rawResult.orderID || (rawResult.order && rawResult.order.id) || 'ok';
       this.logFn(`📤 ${side} ${size}sh@$${rawPrice.toFixed(2)} id:${orderId.toString().substring(0,12)}`);
-      return result;
+      return rawResult;
     }
     this.logFn(`❌ Order failed: ${side} ${size}sh@$${rawPrice.toFixed(2)}`);
     return null;

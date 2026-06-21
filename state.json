@@ -1,14 +1,1 @@
-{
-  "stateVersion": 10,
-  "balance": 0,
-  "totalRealizedPnl": 0,
-  "totalFees": 0,
-  "wins": 0,
-  "losses": 0,
-  "trades": [],
-  "initialEquity": 0,
-  "equityHistory": [],
-  "peakEquity": 0,
-  "maxDrawdown": 0,
-  "windowResults": []
-}
+{"stateVersion":10,"balance":0,"totalRealizedPnl":0,"totalFees":0,"wins":0,"losses":0,"trades":[],"initialEquity":0,"equityHistory":[],"peakEquity":0,"maxDrawdown":0,"windowResults":[]}

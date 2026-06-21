@@ -4,20 +4,21 @@ const fs = require('fs');
 const path = require('path');
 const PolymarketTrader = require('./polymarket-trader');
 
-const INITIAL_CAPITAL = 10000;
+const INITIAL_CAPITAL = 0;
 const GAMMA = 'https://gamma-api.polymarket.com';
 const CLOB = 'https://clob.polymarket.com';
-const STATE_FILE = path.join(__dirname, 'state.json');
-const STATE_VERSION = 10;
 
 const SCALP_SIZE = 10;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
-const FEE_RATE = 0;
-let realTradingEnabled = !!process.env.POLYMARKET_PRIVATE_KEY;
-let traderModeInit = false;
-let trader = null;
+const FEE_RATE = 0; // maker fees = 0 on Polymarket for limit orders
 
+// MUST have private key - no simulation mode
+if (!process.env.POLYMARKET_PRIVATE_KEY) {
+  throw new Error('POLYMARKET_PRIVATE_KEY required - no simulation mode. Set your wallet private key.');
+}
+
+let trader = null;
 let balance = INITIAL_CAPITAL;
 let totalRealizedPnl = 0;
 let totalFees = 0;
@@ -36,6 +37,7 @@ let logFn = () => {};
 let startTime = Date.now();
 let discoveryCount = 0;
 let tickCount = 0;
+let pendingOrders = {}; // {id: {side, tokenId, price, shares, status}}
 
 function fl2(v) { return Math.round((v || 0) * 100) / 100; }
 function fl4(v) { return Math.round((v || 0) * 10000) / 10000; }
@@ -67,7 +69,6 @@ async function discoverMarkets() {
   const candidates = windowEpochs();
   let found = 0;
   const now = Date.now();
-
   const toFetch = candidates.filter(c => !(marketCache[c.slug] && marketCache[c.slug].resolved));
   if (toFetch.length === 0) return;
 
@@ -90,7 +91,6 @@ async function discoverMarkets() {
   for (const result of results) {
     if (result.status !== 'fulfilled' || !result.value) continue;
     const { c, ev, m, tokenIds, prices } = result.value;
-
     const tradingEndMs = (c.epoch + c.windowS) * 1000;
     const secs = Math.round((tradingEndMs - now) / 1000);
     const active = secs > 0 && secs <= c.windowS;
@@ -110,12 +110,11 @@ async function discoverMarkets() {
         slug: c.slug, asset: c.asset, windowType: c.windowType,
         entered: false, phase: 'idle',
         upHeld: 0, downHeld: 0, scalpPnl: 0, scalpCount: 0,
-        scalpCycles: [], // [{buyPrice, sellPrice, shares, pnl, time}]
+        scalpCycles: [],
         entryBalance: 0, entryTime: 0,
         upBuyOrder: null, upSellOrder: null, upPendingSell: [],
         downBuyOrder: null, downSellOrder: null, downPendingSell: [],
-        baseCost: 0,
-        tpCount: 0, resolvePnl: 0,
+        baseCost: 0, tpCount: 0, resolvePnl: 0,
       };
     }
     found++;
@@ -145,15 +144,47 @@ async function fetchClob() {
         getJson(`${CLOB}/midpoint?token_id=${m.downTokenId}`)
       ]);
       if (upRes && upRes.mid !== undefined) m.upMid = parseFloat(upRes.mid);
-      else m.upMid = undefined;
       if (dnRes && dnRes.mid !== undefined) m.downMid = parseFloat(dnRes.mid);
-      else m.downMid = undefined;
+      // Derive opposite from midpoint (they should sum to ~1.0)
       if (m.upMid !== undefined && m.downMid === undefined) m.downMid = fl4(1 - m.upMid);
       else if (m.downMid !== undefined && m.upMid === undefined) m.upMid = fl4(1 - m.downMid);
       m.hasClob = (m.upMid !== undefined && m.downMid !== undefined);
     } catch(e) { m.hasClob = false; }
   });
   await Promise.all(promises);
+  
+  // Check fills on pending orders
+  if (trader && trader.apiKey && Object.keys(pendingOrders).length > 0) {
+    try {
+      const openOrders = await trader.getOpenOrders();
+      const openIds = new Set((openOrders || []).map(o => o.id));
+      for (const [id, po] of Object.entries(pendingOrders)) {
+        if (po.status === 'pending' && !openIds.has(id)) {
+          // Order was filled or cancelled
+          po.status = 'filled';
+          logFn(`✅ ORDER FILLED ${po.side} ${po.shares}sh@$${po.price}`);
+          // Update held shares
+          for (const ss of Object.values(strategyState)) {
+            if (ss.slug === po.slug) {
+              if (po.side === 'UP') {
+                if (po.dir === 'buy') { ss.upHeld += po.shares; ss.baseCost = fl2(ss.baseCost + po.shares * po.price); }
+                else { ss.upHeld -= po.shares; }
+              } else {
+                if (po.dir === 'buy') { ss.downHeld += po.shares; ss.baseCost = fl2(ss.baseCost + po.shares * po.price); }
+                else { ss.downHeld -= po.shares; }
+              }
+            }
+          }
+          // Update balance
+          if (po.dir === 'sell') {
+            const proceeds = po.shares * po.price;
+            balance = fl2(balance + proceeds);
+            totalRealizedPnl = fl2(totalRealizedPnl + proceeds - (po.buyCost || 0));
+          }
+        }
+      }
+    } catch(e) { /* best-effort fill check */ }
+  }
 }
 
 function book(m) {
@@ -190,6 +221,36 @@ function tryEnter(m) {
   logFn(`🟢 ENTER ${m.asset.toUpperCase()} ${m.windowType} | UP:${fl4(b.upMid)} DN:${fl4(b.downMid)} remaining:${secs}s`);
 }
 
+// ── Place real CLOB limit order ──
+async function placeOrder(tokenId, side, price, shares, slug, dir) {
+  if (!trader || !trader.apiKey) {
+    logFn(`⚠️ No trader - cannot place ${side} order`);
+    return null;
+  }
+  try {
+    const result = await trader.placeOrder(tokenId, side, price, shares);
+    if (result && result.id) {
+      const oid = result.id;
+      pendingOrders[oid] = { id: oid, tokenId, side, price, shares, slug, dir, status: 'pending', time: Date.now() };
+      logFn(`📤 ${side} ${shares}sh@$${price} id:${oid.substring(0,10)}`);
+      return oid;
+    } else if (result && result.order?.id) {
+      const oid = result.order.id;
+      pendingOrders[oid] = { id: oid, tokenId, side, price, shares, slug, dir, status: 'pending', time: Date.now() };
+      logFn(`📤 ${side} ${shares}sh@$${price} id:${oid.substring(0,10)}`);
+      return oid;
+    } else if (result && result.success) {
+      logFn(`📤 ${side} ${shares}sh@$${price} (no id returned)`);
+      return null;
+    }
+    logFn(`❌ Order failed: ${side} ${shares}sh@$${price}`);
+    return null;
+  } catch(e) {
+    logFn(`❌ Order error: ${e.message.substring(0,80)}`);
+    return null;
+  }
+}
+
 // ── Scalp ──
 function runScalp(m) {
   const ss = strategyState[m.slug];
@@ -197,7 +258,7 @@ function runScalp(m) {
   const secs = m.secondsToEnd;
   if (secs <= 0) return;
 
-  const scalpEnd = m.windowType === '5m' ? 60 : 180;
+  const scalpEnd = 180;
   if (secs <= scalpEnd) { endScalpPhase(m, ss); return; }
 
   const b = book(m);
@@ -205,131 +266,66 @@ function runScalp(m) {
 
   // === UP side ===
   const upBuyPrice = fl4(b.upBid - SCALP_OFFSET);
-  if (upBuyPrice > 0.01) {
-    if (!ss.upBuyOrder) ss.upBuyOrder = { id: id8(), price: upBuyPrice, shares: SIZE, tickCount: 0 };
-    else { ss.upBuyOrder.price = upBuyPrice; ss.upBuyOrder.tickCount++; }
+  if (upBuyPrice > 0.01 && !ss.upBuyOrder) {
+    ss.upBuyOrder = { id: id8(), price: upBuyPrice, shares: SIZE, tickCount: 0 };
+    // Place real limit order
+    placeOrder(m.upTokenId, 'BUY', upBuyPrice, SIZE, m.slug, 'buy').then(oid => {
+      if (oid) ss.upBuyOrder.orderId = oid;
+    });
   }
-  if (ss.upBuyOrder) {
-    const fillProb = Math.min(0.90, 0.02 + ss.upBuyOrder.tickCount * 0.015);
-    if (b.upMid <= ss.upBuyOrder.price || Math.random() < fillProb) {
-      const cost = fl2(SIZE * ss.upBuyOrder.price);
-      if (cost >= 2 && cost <= balance * 0.2) {
-        const filledPrice = ss.upBuyOrder.price;
-        balance = fl2(balance - cost);
-        ss.upHeld += SIZE;
-        ss.baseCost = fl2(ss.baseCost + cost);
-        logFn(`🟢 BUY↑ ${m.asset.toUpperCase()} ${SIZE}sh@$${filledPrice} cost:$${cost}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'UP',price:filledPrice,shares:SIZE,cost,pnl:0,reason:'SCALP',time:Date.now()});
-        if(trades.length>1000)trades=trades.slice(-1000);
-        const sellPrice = fl4(b.upAsk + SCALP_OFFSET);
-        if (sellPrice < 0.99 && sellPrice > filledPrice + 0.01)
-          ss.upPendingSell.push({ id: id8(), price: sellPrice, shares: SIZE, buyPrice: filledPrice, time: Date.now() });
-        ss.upBuyOrder = { id: id8(), price: upBuyPrice, shares: SIZE, tickCount: 0 };
-      }
-    }
-  }
-  // UP sells
+  
+  // Check if pending buy was filled via our order check in fetchClob
+  // and reset for next cycle
+
+  // Check for pending sell fills
   if (ss.upPendingSell.length > 0) {
     for (let i = ss.upPendingSell.length - 1; i >= 0; i--) {
       const o = ss.upPendingSell[i];
-      const fillProb = Math.min(0.90, 0.02 + (o.tickCount || 0) * 0.02);
-      if (b.upMid >= o.price - 0.002 || Math.random() < fillProb) {
+      if (o.filled) {
         const proceeds = fl2(o.shares * o.price);
         const pnl = fl2((o.price - o.buyPrice) * o.shares);
-        const fee = fl2(proceeds * FEE_RATE);
-        balance = fl2(balance + proceeds - fee);
-        totalFees = fl2(totalFees + fee);
-        ss.scalpPnl = fl2(ss.scalpPnl + pnl - fee);
+        balance = fl2(balance + proceeds);
+        ss.scalpPnl = fl2(ss.scalpPnl + pnl);
         ss.scalpCount++;
-        ss.scalpCycles.push({buyPrice:o.buyPrice, sellPrice:o.price, shares:o.shares, pnl:fl2(pnl-fee), side:'UP', time:Date.now()});
-        totalRealizedPnl = fl2(totalRealizedPnl + pnl - fee);
+        ss.scalpCycles.push({buyPrice:o.buyPrice, sellPrice:o.price, shares:o.shares, pnl, side:'UP', time:Date.now()});
+        totalRealizedPnl = fl2(totalRealizedPnl + pnl);
         if (pnl >= 0) wins++; else losses++;
         ss.upHeld -= o.shares;
-        logFn(`🔴 SELL↑ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} (cost:$${o.buyPrice}) PnL:$${fl2(pnl)} fee:$${fee}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'UP',price:o.price,shares:o.shares,cost:fl2(o.buyPrice*o.shares),pnl,fee,reason:'SCALP',time:Date.now()});
+        logFn(`🔴 SELL↑ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} PnL:$${fl2(pnl)}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'UP',price:o.price,shares:o.shares,cost:fl2(o.buyPrice*o.shares),pnl,fee:0,reason:'SCALP',time:Date.now()});
         if(trades.length>1000)trades=trades.slice(-1000);
         ss.upPendingSell.splice(i, 1);
-      } else { o.tickCount = (o.tickCount || 0) + 1; }
-    }
-  }
-  // UP endgame sell
-  if (ss.upSellOrder) {
-    const o = ss.upSellOrder;
-    if (b.upMid >= o.price - 0.002 || o.price >= 0.98) {
-      const proceeds = fl2(o.shares * o.price);
-      const fee = fl2(proceeds * FEE_RATE);
-      balance = fl2(balance + proceeds - fee);
-      totalFees = fl2(totalFees + fee);
-      ss.upHeld -= o.shares;
-      ss.tpCount++;
-      ss.upSellOrder = null;
-      logFn(`💰 TP↑ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} fee:$${fee}`);
-      trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'UP',price:o.price,shares:o.shares,cost:0,pnl:fl2(proceeds-fee),fee,reason:'ENDGAME',time:Date.now()});
-      if(trades.length>1000)trades=trades.slice(-1000);
+      }
     }
   }
 
   // === DOWN side (mirror) ===
   const dnBuyPrice = fl4(b.downBid - SCALP_OFFSET);
-  if (dnBuyPrice > 0.01) {
-    if (!ss.downBuyOrder) ss.downBuyOrder = { id: id8(), price: dnBuyPrice, shares: SIZE, tickCount: 0 };
-    else { ss.downBuyOrder.price = dnBuyPrice; ss.downBuyOrder.tickCount++; }
+  if (dnBuyPrice > 0.01 && !ss.downBuyOrder) {
+    ss.downBuyOrder = { id: id8(), price: dnBuyPrice, shares: SIZE, tickCount: 0 };
+    placeOrder(m.downTokenId, 'BUY', dnBuyPrice, SIZE, m.slug, 'buy').then(oid => {
+      if (oid) ss.downBuyOrder.orderId = oid;
+    });
   }
-  if (ss.downBuyOrder) {
-    const fillProb = Math.min(0.90, 0.02 + ss.downBuyOrder.tickCount * 0.015);
-    if (b.downMid <= ss.downBuyOrder.price || Math.random() < fillProb) {
-      const cost = fl2(SIZE * ss.downBuyOrder.price);
-      if (cost >= 2 && cost <= balance * 0.2) {
-        const filledPrice = ss.downBuyOrder.price;
-        balance = fl2(balance - cost);
-        ss.downHeld += SIZE;
-        ss.baseCost = fl2(ss.baseCost + cost);
-        logFn(`🟢 BUY↓ ${m.asset.toUpperCase()} ${SIZE}sh@$${filledPrice} cost:$${cost}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'BUY',side:'DOWN',price:filledPrice,shares:SIZE,cost,pnl:0,reason:'SCALP',time:Date.now()});
-        if(trades.length>1000)trades=trades.slice(-1000);
-        const sellPrice = fl4(b.downAsk + SCALP_OFFSET);
-        if (sellPrice < 0.99 && sellPrice > filledPrice + 0.01)
-          ss.downPendingSell.push({ id: id8(), price: sellPrice, shares: SIZE, buyPrice: filledPrice, time: Date.now() });
-        ss.downBuyOrder = { id: id8(), price: dnBuyPrice, shares: SIZE, tickCount: 0 };
-      }
-    }
-  }
+
   if (ss.downPendingSell.length > 0) {
     for (let i = ss.downPendingSell.length - 1; i >= 0; i--) {
       const o = ss.downPendingSell[i];
-      const fillProb = Math.min(0.90, 0.02 + (o.tickCount || 0) * 0.02);
-      if (b.downMid >= o.price - 0.002 || Math.random() < fillProb) {
+      if (o.filled) {
         const proceeds = fl2(o.shares * o.price);
         const pnl = fl2((o.price - o.buyPrice) * o.shares);
-        const fee = fl2(proceeds * FEE_RATE);
-        balance = fl2(balance + proceeds - fee);
-        totalFees = fl2(totalFees + fee);
-        ss.scalpPnl = fl2(ss.scalpPnl + pnl - fee);
+        balance = fl2(balance + proceeds);
+        ss.scalpPnl = fl2(ss.scalpPnl + pnl);
         ss.scalpCount++;
-        ss.scalpCycles.push({buyPrice:o.buyPrice, sellPrice:o.price, shares:o.shares, pnl:fl2(pnl-fee), side:'DOWN', time:Date.now()});
-        totalRealizedPnl = fl2(totalRealizedPnl + pnl - fee);
+        ss.scalpCycles.push({buyPrice:o.buyPrice, sellPrice:o.price, shares:o.shares, pnl, side:'DOWN', time:Date.now()});
+        totalRealizedPnl = fl2(totalRealizedPnl + pnl);
         if (pnl >= 0) wins++; else losses++;
         ss.downHeld -= o.shares;
-        logFn(`🔴 SELL↓ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} (cost:$${o.buyPrice}) PnL:$${fl2(pnl)} fee:$${fee}`);
-        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'DOWN',price:o.price,shares:o.shares,cost:fl2(o.buyPrice*o.shares),pnl,fee,reason:'SCALP',time:Date.now()});
+        logFn(`🔴 SELL↓ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} PnL:$${fl2(pnl)}`);
+        trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'SELL',side:'DOWN',price:o.price,shares:o.shares,cost:fl2(o.buyPrice*o.shares),pnl,fee:0,reason:'SCALP',time:Date.now()});
         if(trades.length>1000)trades=trades.slice(-1000);
         ss.downPendingSell.splice(i, 1);
-      } else { o.tickCount = (o.tickCount || 0) + 1; }
-    }
-  }
-  if (ss.downSellOrder) {
-    const o = ss.downSellOrder;
-    if (b.downMid >= o.price - 0.002 || o.price >= 0.98) {
-      const proceeds = fl2(o.shares * o.price);
-      const fee = fl2(proceeds * FEE_RATE);
-      balance = fl2(balance + proceeds - fee);
-      totalFees = fl2(totalFees + fee);
-      ss.downHeld -= o.shares;
-      ss.tpCount++;
-      ss.downSellOrder = null;
-      logFn(`💰 TP↓ ${m.asset.toUpperCase()} ${o.shares}sh@$${o.price} fee:$${fee}`);
-      trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'DOWN',price:o.price,shares:o.shares,cost:0,pnl:fl2(proceeds-fee),fee,reason:'ENDGAME',time:Date.now()});
-      if(trades.length>1000)trades=trades.slice(-1000);
+      }
     }
   }
 }
@@ -337,11 +333,22 @@ function runScalp(m) {
 function endScalpPhase(m, ss) {
   ss.phase = 'endgame';
   ss.upBuyOrder = null; ss.downBuyOrder = null;
-  ss.upPendingSell = []; ss.downPendingSell = [];
-  if (ss.upHeld > 0 && !ss.upSellOrder)
+  // Cancel pending buy orders
+  for (const po of Object.values(pendingOrders)) {
+    if (po.status === 'pending' && po.slug === m.slug) {
+      trader.cancelOrder(po.id).catch(() => {});
+      po.status = 'cancelled';
+    }
+  }
+  // Place TP sell orders
+  if (ss.upHeld > 0 && !ss.upSellOrder) {
     ss.upSellOrder = { id: id8(), price: TP_PRICE, shares: ss.upHeld };
-  if (ss.downHeld > 0 && !ss.downSellOrder)
+    placeOrder(m.upTokenId, 'SELL', TP_PRICE, ss.upHeld, m.slug, 'sell');
+  }
+  if (ss.downHeld > 0 && !ss.downSellOrder) {
     ss.downSellOrder = { id: id8(), price: TP_PRICE, shares: ss.downHeld };
+    placeOrder(m.downTokenId, 'SELL', TP_PRICE, ss.downHeld, m.slug, 'sell');
+  }
   logFn(`🛑 ENDGAME ${m.asset.toUpperCase()} ${m.windowType} | Scalps:${ss.scalpCount} Held:↑${ss.upHeld}↓${ss.downHeld} TP@$${TP_PRICE}`);
 }
 
@@ -351,29 +358,18 @@ function runEndgame(m) {
   const secs = m.secondsToEnd;
   if (secs < -10) return;
 
-  if (ss.upHeld > 0 && !ss.upSellOrder) ss.upSellOrder = { id: id8(), price: TP_PRICE, shares: ss.upHeld };
-  if (ss.downHeld > 0 && !ss.downSellOrder) ss.downSellOrder = { id: id8(), price: TP_PRICE, shares: ss.downHeld };
-
-  const b = book(m);
-  if (ss.upSellOrder && b.upMid >= TP_PRICE - 0.005) {
-    const proceeds = fl2(ss.upSellOrder.shares * TP_PRICE);
-    const fee = fl2(proceeds * FEE_RATE);
-    balance = fl2(balance + proceeds - fee);
-    totalFees = fl2(totalFees + fee);
-    logFn(`💰 TP↑ ${m.asset.toUpperCase()} ${ss.upSellOrder.shares}sh@$${TP_PRICE} proceeds:$${proceeds} fee:$${fee}`);
-    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'UP',price:TP_PRICE,shares:ss.upSellOrder.shares,cost:0,pnl:fl2(proceeds-fee),fee,reason:'TP',time:Date.now()});
-    if(trades.length>1000)trades=trades.slice(-1000);
-    ss.upHeld = 0; ss.upSellOrder = null; ss.tpCount++;
-  }
-  if (ss.downSellOrder && b.downMid >= TP_PRICE - 0.005) {
-    const proceeds = fl2(ss.downSellOrder.shares * TP_PRICE);
-    const fee = fl2(proceeds * FEE_RATE);
-    balance = fl2(balance + proceeds - fee);
-    totalFees = fl2(totalFees + fee);
-    logFn(`💰 TP↓ ${m.asset.toUpperCase()} ${ss.downSellOrder.shares}sh@$${TP_PRICE} proceeds:$${proceeds} fee:$${fee}`);
-    trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,action:'TP',side:'DOWN',price:TP_PRICE,shares:ss.downSellOrder.shares,cost:0,pnl:fl2(proceeds-fee),fee,reason:'TP',time:Date.now()});
-    if(trades.length>1000)trades=trades.slice(-1000);
-    ss.downHeld = 0; ss.downSellOrder = null; ss.tpCount++;
+  // Check TP fills via pendingOrders
+  for (const po of Object.values(pendingOrders)) {
+    if (po.status === 'filled' && po.slug === m.slug && po.dir === 'sell') {
+      if (po.side === 'UP' && ss.upSellOrder) {
+        logFn(`💰 TP↑ filled ${po.shares}sh@$${po.price}`);
+        ss.upHeld = 0; ss.upSellOrder = null; ss.tpCount++;
+      }
+      if (po.side === 'DOWN' && ss.downSellOrder) {
+        logFn(`💰 TP↓ filled ${po.shares}sh@$${po.price}`);
+        ss.downHeld = 0; ss.downSellOrder = null; ss.tpCount++;
+      }
+    }
   }
 }
 
@@ -390,45 +386,22 @@ function resolve(m) {
 
   if (ss.upHeld > 0) {
     const val = fl2(winnerUp ? ss.upHeld * 0.99 : ss.upHeld * 0.01);
-    const fee = fl2(val * FEE_RATE);
-    balance = fl2(balance + val - fee);
-    totalFees = fl2(totalFees + fee);
-    settlePnl += fl2(val - fee);
-    logFn('🏁 RESOLVE↑ ' + m.asset.toUpperCase() + ' ' + m.windowType + ' ' + ss.upHeld + 'sh settle $' + (winnerUp ? '0.99' : '0.01') + ' = $' + val);
+    balance = fl2(balance + val);
+    settlePnl += val;
+    logFn('🏁 RESOLVE↑ ' + m.asset.toUpperCase() + ' ' + m.windowType + ' ' + ss.upHeld + 'sh = $' + val);
   }
   if (ss.downHeld > 0) {
     const val = fl2(!winnerUp ? ss.downHeld * 0.99 : ss.downHeld * 0.01);
-    const fee = fl2(val * FEE_RATE);
-    balance = fl2(balance + val - fee);
-    totalFees = fl2(totalFees + fee);
-    settlePnl += fl2(val - fee);
-    logFn('🏁 RESOLVE↓ ' + m.asset.toUpperCase() + ' ' + m.windowType + ' ' + ss.downHeld + 'sh settle $' + (!winnerUp ? '0.99' : '0.01') + ' = $' + val);
-  }
-
-  for (const o of (ss.upPendingSell || [])) {
-    const val = fl2(b.upMid * o.shares);
-    const fee = fl2(val * FEE_RATE);
-    balance = fl2(balance + val - fee);
-    totalFees = fl2(totalFees + fee);
-    const pnl = fl2(val - (o.buyPrice * o.shares) - fee);
-    if (pnl >= 0) wins++; else losses++;
-    settlePnl += pnl;
-  }
-  for (const o of (ss.downPendingSell || [])) {
-    const val = fl2(b.downMid * o.shares);
-    const fee = fl2(val * FEE_RATE);
-    balance = fl2(balance + val - fee);
-    totalFees = fl2(totalFees + fee);
-    const pnl = fl2(val - (o.buyPrice * o.shares) - fee);
-    if (pnl >= 0) wins++; else losses++;
-    settlePnl += pnl;
+    balance = fl2(balance + val);
+    settlePnl += val;
+    logFn('🏁 RESOLVE↓ ' + m.asset.toUpperCase() + ' ' + m.windowType + ' ' + ss.downHeld + 'sh = $' + val);
   }
 
   ss.resolvePnl = fl2(settlePnl);
   const windowPnl = fl2(balance - ss.entryBalance);
   totalRealizedPnl = fl2(totalRealizedPnl + windowPnl);
   logFn('💰 RESOLVED ' + m.asset.toUpperCase() + ' ' + m.windowType + ' | WindowsPnL:$' + fl2(windowPnl) + ' (scalps:' + fl2(ss.scalpPnl) + ' settle:' + fl2(settlePnl) + ')');
-  trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,scalpCount:ss.scalpCount,tpCount:ss.tpCount,pnl:fl2(windowPnl),scalpPnl:ss.scalpPnl,settlePnl:fl2(settlePnl),reason:'RESOLVED',time:ss.entryTime||Date.now(),exitTime:Date.now()});
+  trades.push({slug:m.slug,asset:m.asset,windowType:m.windowType,scalpCount:ss.scalpCount,tpCount:ss.tpCount,pnl:fl2(windowPnl),scalpPnl:ss.scalpPnl,settlePnl:fl2(settlePnl),reason:'RESOLVED',time:ss.entryTime||Date.now()});
   windowResults.push({asset:m.asset,windowType:m.windowType,pnl:fl2(windowPnl),scalpPnl:ss.scalpPnl,settlePnl:fl2(settlePnl),scalps:ss.scalpCount,time:Date.now()});
   if (windowResults.length > 100) windowResults = windowResults.slice(-100);
   if(trades.length>500)trades=trades.slice(-500);
@@ -438,7 +411,7 @@ function resolve(m) {
 
 function strategyTick() {
   const active = Object.values(marketCache).filter(m => m.active);
-  if (active.length === 0 || balance < 10) return;
+  if (active.length === 0) return;
   for (const m of active) {
     if (!m.hasClob) continue;
     const ss = strategyState[m.slug];
@@ -448,36 +421,6 @@ function strategyTick() {
     else if (ss.phase === 'endgame') runEndgame(m);
     resolve(m);
   }
-}
-
-function saveState() {
-  try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify({
-      stateVersion: STATE_VERSION, balance, totalRealizedPnl, totalFees,
-      wins, losses, trades: trades.slice(-300), initialEquity,
-      equityHistory: equityHistory.slice(-5000), peakEquity, maxDrawdown, windowResults: windowResults.slice(-50),
-    }, null, 2));
-  } catch (_) {}
-}
-function loadState() {
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      const d = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      if (d.stateVersion === STATE_VERSION) {
-        balance = d.balance || INITIAL_CAPITAL;
-        totalRealizedPnl = d.totalRealizedPnl || 0;
-        totalFees = d.totalFees || 0;
-        wins = d.wins || 0;
-        losses = d.losses || 0;
-        trades = d.trades || [];
-        initialEquity = d.initialEquity || INITIAL_CAPITAL;
-        equityHistory = d.equityHistory || [];
-        peakEquity = d.peakEquity || INITIAL_CAPITAL;
-        maxDrawdown = d.maxDrawdown || 0;
-        windowResults = d.windowResults || [];
-      }
-    }
-  } catch (_) {}
 }
 
 function buildSnapshot() {
@@ -490,7 +433,6 @@ function buildSnapshot() {
 
   const active = Object.values(marketCache).filter(m => m.active && m.hasClob);
   let totalUpShares = 0, totalDownShares = 0;
-  let shares15u = 0, shares15d = 0, shares5u = 0, shares5d = 0;
   let unrealizedPnl = 0;
 
   const marketDisplay = active.map(m => {
@@ -500,8 +442,6 @@ function buildSnapshot() {
     const d = ss ? ss.downHeld : 0;
     totalUpShares += u; totalDownShares += d;
     if (ss) unrealizedPnl += fl2(u * b.upMid) + fl2(d * b.downMid);
-    if (m.windowType === '15m') { shares15u += u; shares15d += d; }
-    else { shares5u += u; shares5d += d; }
     const cycles = ss ? ss.scalpCycles || [] : [];
     const last5 = cycles.slice(-5).reverse();
     const avgBuy = cycles.length > 0 ? fl4(cycles.reduce((s,c) => s + c.buyPrice, 0) / cycles.length) : 0;
@@ -518,10 +458,6 @@ function buildSnapshot() {
       scalpPnl: ss ? fl2(ss.scalpPnl) : 0,
       tpCount: ss ? ss.tpCount : 0,
       avgBuyPrice: avgBuy, avgSellPrice: avgSell,
-      hasUpSell: ss && ss.upSellOrder ? 1 : 0,
-      hasUpBuy: ss && ss.upBuyOrder ? 1 : 0,
-      hasDnSell: ss && ss.downSellOrder ? 1 : 0,
-      hasDnBuy: ss && ss.downBuyOrder ? 1 : 0,
       recentCycles: last5.map(c => ({...c, time: c.time})),
     };
   });
@@ -535,10 +471,16 @@ function buildSnapshot() {
     if (equityHistory.length > 10000) equityHistory = equityHistory.slice(-10000);
   }
 
+  // Clean stale pending orders
+  for (const [id, po] of Object.entries(pendingOrders)) {
+    if (po.status === 'pending' && now - po.time > 300000) {
+      po.status = 'expired';
+      trader.cancelOrder(id).catch(() => {});
+    }
+  }
+
   return {
-    peakEquity: fl2(peakEquity),
-    maxDrawdown,
-    drawdown: dd,
+    peakEquity: fl2(peakEquity), maxDrawdown, drawdown: dd,
     windowResults: windowResults.slice(-20).reverse(),
     balance: fl2(balance), equity, initialEquity,
     totalPnl: fl4(totalRealizedPnl), totalFees: fl4(totalFees),
@@ -546,8 +488,6 @@ function buildSnapshot() {
     winRate: wins + losses > 0 ? fl4(wins / (wins + losses) * 100) : 0,
     activeMarkets: active.length,
     totalUpShares, totalDownShares,
-    shares15m: { up: shares15u, dn: shares15d },
-    shares5m: { up: shares5u, dn: shares5d },
     equityHistory: equityHistory.slice(-500),
     marketDisplay,
     trades: trades.slice(-50).reverse().map(t => ({
@@ -560,11 +500,10 @@ function buildSnapshot() {
     })),
     uptime: Math.floor((now - startTime) / 1000),
     discoveryCount, connected: true, timestamp: now,
-    realTrading: realTradingEnabled && !!trader,
-    note: `v${STATE_VERSION} CLOB-only scalper | ${FEE_RATE*100}% fees | 5m scalp=4min, 15m scalp=12min | TP@$${TP_PRICE}`,
+    realTrading: true,
+    note: `LIVE ONLY | BTC 15m | CLOB scalper | ${Object.keys(pendingOrders).length} pending orders`,
   };
 }
-
 
 async function tick() {
   try {
@@ -573,143 +512,71 @@ async function tick() {
     else if (tickCount % 15 === 0) await discoverMarkets();
     await fetchClob();
     strategyTick();
-    saveState();
+    if (tickCount % 10 === 0) {
+      // Periodically sync balance from on-chain
+      try {
+        const rb = await Promise.race([
+          trader.getBalance(),
+          new Promise(r => setTimeout(() => r(-1), 6000))
+        ]);
+        if (rb >= 0) balance = rb;
+      } catch(_) {}
+    }
     emitFn('snapshot', buildSnapshot());
   } catch (e) { logFn(`⚠️ ${e.message}`); }
 }
 
 async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
-  loadState();
-  if (realTradingEnabled) {
-    try {
-      trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
-      trader.setLogFn(logFn);
-      logFn('🔑 Authenticating with Polymarket CLOB...');
-      const authed = await trader.authenticate();
-      if (authed) {
-        logFn('✅ Real trading mode ACTIVE');
-        // Try to fetch on-chain USDC balance (non-blocking with timeout)
-        // If RPC fails, keep using saved balance from state.json
-        try {
-          const realBalance = await Promise.race([
-            trader.getBalance(),
-            new Promise(r => setTimeout(() => r(-1), 8000))
-          ]);
-          if (realBalance > 0) {
-            balance = realBalance;
-            initialEquity = realBalance;
-            peakEquity = realBalance;
-            logFn('💰 On-chain balance: $' + fl2(realBalance));
-          } else {
-            // RPC timeout — assume $0 (no deposit)
-            balance = 0;
-            initialEquity = 0;
-            peakEquity = 0;
-            logFn('💰 RPC timeout — wallet shows $0');
-          }
-        } catch(e) {
-          // RPC failed — wallet has $0 (no deposit), show true balance
-          balance = 0;
-          initialEquity = 0;
-          peakEquity = 0;
-          logFn('💰 Balance fetch failed: wallet shows $0 (RPC err: ' + e.message.substring(0,60) + ')');
-        }
-      } else {
-        logFn('⚠️ Auth failed, running in SIMULATION mode');
-        trader = null;
-      }
-    } catch(e) {
-      logFn('⚠️ Trader init failed: ' + e.message + ' - running simulation');
-      trader = null;
-    }
+  trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
+  trader.setLogFn(logFn);
+  logFn('🔑 Authenticating with Polymarket CLOB...');
+  const authed = await trader.authenticate();
+  if (!authed) {
+    logFn('❌ Authentication failed. Check your POLYMARKET_PRIVATE_KEY.');
+    process.exit(1);
   }
-  const mode = realTradingEnabled && trader ? 'LIVE' : 'SIM';
-  logFn('✅ v' + STATE_VERSION + ' BTC 15m | Mode: ' + mode + ' | Capital: $' + fl2(balance));
+  
+  // Get real balance
+  try {
+    const realBalance = await Promise.race([
+      trader.getBalance(),
+      new Promise(r => setTimeout(() => r(-1), 15000))
+    ]);
+    if (realBalance > 0) {
+      balance = realBalance;
+      initialEquity = realBalance;
+      peakEquity = realBalance;
+      logFn('💰 On-chain balance: $' + fl2(realBalance));
+    } else {
+      logFn('💰 On-chain balance: $0 (or RPC timeout)');
+    }
+  } catch(e) {
+    logFn('💰 Balance fetch failed, showing $0');
+  }
+
+  logFn('🔴 LIVE TRADING MODE | Capital: $' + fl2(balance));
   await discoverMarkets();
   await tick();
   setInterval(tick, 1000);
+  
+  // Log balance sync every 60s
+  setInterval(async () => {
+    try {
+      const rb = await Promise.race([
+        trader.getBalance(),
+        new Promise(r => setTimeout(() => r(-1), 6000))
+      ]);
+      if (rb >= 0 && rb !== balance) {
+        balance = rb;
+        logFn('💰 Balance synced: $' + fl2(rb));
+      }
+    } catch(_) {}
+  }, 60000);
 }
 
 async function runBacktest() {
   return { overall: { trades: wins + losses, wins, losses, pnl: totalRealizedPnl, fees: totalFees } };
 }
 
-/**
- * Toggle between LIVE (real) and SIM (simulated) trading mode from dashboard.
- * Returns { mode: 'LIVE'|'SIM', ok: boolean, error?: string }
- */
-async function setTradingMode(mode) {
-  if (mode === 'LIVE') {
-    if (trader && trader.apiKey) {
-      realTradingEnabled = true;
-      logFn('🔄 Mode switched to LIVE');
-      // Fetch real balance on toggle (best-effort)
-      try {
-        const rb = await Promise.race([
-          trader.getBalance(),
-          new Promise(r => setTimeout(() => r(-1), 6000))
-        ]);
-        if (rb > 0) {
-          balance = rb;
-          initialEquity = rb;
-          peakEquity = rb;
-        } else {
-          balance = 0;
-        }
-      } catch(e) {
-        balance = 0;
-      }
-      return { mode: 'LIVE', ok: true };
-    }
-    // Try to init trader if private key is available
-    if (!process.env.POLYMARKET_PRIVATE_KEY) {
-      logFn('⚠️ Cannot switch to LIVE: no POLYMARKET_PRIVATE_KEY set');
-      return { mode: 'SIM', ok: false, error: 'No POLYMARKET_PRIVATE_KEY env var' };
-    }
-    try {
-      trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
-      trader.setLogFn(logFn);
-      logFn('🔑 Authenticating for LIVE mode...');
-      const authed = await trader.authenticate();
-      if (authed) {
-        realTradingEnabled = true;
-        logFn('✅ Switched to LIVE mode');
-        // Try to get real balance (non-blocking, best-effort)
-        try {
-          const rb = await Promise.race([
-            trader.getBalance(),
-            new Promise(r => setTimeout(() => r(-1), 6000))
-          ]);
-          if (rb > 0) {
-            balance = rb;
-            initialEquity = rb;
-            peakEquity = rb;
-            logFn('💰 On-chain balance: $' + fl2(rb));
-          } else {
-            balance = 0;
-            logFn('💰 Wallet balance: $0');
-          }
-        } catch(e) {
-          balance = 0;
-          logFn('💰 Balance check failed, showing $0');
-        }
-        return { mode: 'LIVE', ok: true };
-      } else {
-        trader = null;
-        logFn('⚠️ Auth failed, staying in SIM mode');
-        return { mode: 'SIM', ok: false, error: 'Auth failed' };
-      }
-    } catch(e) {
-      trader = null;
-      logFn('⚠️ Trader init failed: ' + e.message);
-      return { mode: 'SIM', ok: false, error: e.message };
-    }
-  } else {
-    realTradingEnabled = false;
-    logFn('🔄 Mode switched to SIM');
-    return { mode: 'SIM', ok: true };
-  }
-}
-
-module.exports = { start, buildSnapshot, runBacktest, setTradingMode };
+module.exports = { start, buildSnapshot, runBacktest };

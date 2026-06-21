@@ -226,8 +226,8 @@ function render(d){
   th+='</div>';ts.innerHTML=th;
 
   var up=d.uptime||0;
-  var upStr=up>3600?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':up>60?Math.floor(up/60)+'m '+(up%60)+'s':up+'s';
-  document.getElementById('footer').innerHTML='Uptime: '+upStr+' | Peak: $'+fmt2(d.peakEquity||0)+' | MaxDD: '+(d.maxDrawdown||0).toFixed(2)+'% | Windows: '+(d.windowResults||[]).length+' | v10';
+  var upStr=up>3600?Math.floor(up/3600)+'h '+Math.floor((up%3600)/60)+'m':up>60?Math.floor(up/60)+'m '+(up%60)+'s':up+'s';var cv=d.commitVersion||'?';
+  document.getElementById('footer').innerHTML='Uptime: '+upStr+' | Peak: $'+fmt2(d.peakEquity||0)+' | MaxDD: '+(d.maxDrawdown||0).toFixed(2)+'% | Windows: '+(d.windowResults||[]).length+' | commit: '+cv+' | v10';
 }
 
 function refreshBalance(){

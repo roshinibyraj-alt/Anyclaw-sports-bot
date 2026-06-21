@@ -1,14 +1,14 @@
 {
   "stateVersion": 10,
-  "balance": 10000,
+  "balance": 0,
   "totalRealizedPnl": 0,
   "totalFees": 0,
   "wins": 0,
   "losses": 0,
   "trades": [],
-  "initialEquity": 10000,
+  "initialEquity": 0,
   "equityHistory": [],
-  "peakEquity": 10000,
+  "peakEquity": 0,
   "maxDrawdown": 0,
   "windowResults": []
 }

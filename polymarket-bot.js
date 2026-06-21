@@ -644,6 +644,22 @@ async function setTradingMode(mode) {
     if (trader && trader.apiKey) {
       realTradingEnabled = true;
       logFn('🔄 Mode switched to LIVE');
+      // Fetch real balance on toggle (best-effort)
+      try {
+        const rb = await Promise.race([
+          trader.getBalance(),
+          new Promise(r => setTimeout(() => r(-1), 6000))
+        ]);
+        if (rb > 0) {
+          balance = rb;
+          initialEquity = rb;
+          peakEquity = rb;
+        } else {
+          balance = 0;
+        }
+      } catch(e) {
+        balance = 0;
+      }
       return { mode: 'LIVE', ok: true };
     }
     // Try to init trader if private key is available

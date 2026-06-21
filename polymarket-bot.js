@@ -8,6 +8,8 @@ const INITIAL_CAPITAL = 0;
 const GAMMA = 'https://gamma-api.polymarket.com';
 const CLOB = 'https://clob.polymarket.com';
 
+const KILL_SWITCH = true; // set false to re-enable trading
+
 const SCALP_SIZE = 6;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
@@ -402,6 +404,7 @@ function resolve(m) {
 }
 
 function strategyTick() {
+  if (KILL_SWITCH) return;
   const active = Object.values(marketCache).filter(m => m.active);
   if (active.length === 0) return;
   for (const m of active) {

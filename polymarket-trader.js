@@ -161,11 +161,8 @@ class PolymarketTrader {
   // ── USDC balance via Polygon RPC ──
   async getBalance() {
     try {
-      const provider = new ethers.JsonRpcProvider(
-        { url: 'https://polygon-rpc.com', timeout: 5000, staticNetwork: true },
-        137,
-        { staticNetwork: true }
-      );
+      // Use staticJsonRpcProvider approach - pass URL string directly
+      const provider = new ethers.JsonRpcProvider('https://polygon-rpc.com', 137, { staticNetwork: true });
       const USDC = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
       const contract = new ethers.Contract(USDC, [
         'function balanceOf(address) view returns (uint256)',

@@ -35,7 +35,40 @@ function broadcast(snapshot) {
 io.on('connection', (socket) => {
   console.log(`🔌 Client ${socket.id}`);
   try { socket.emit('snapshot', bot.buildSnapshot()); } catch (_) {}
+  socket.on('setMode', async (mode) => {
+    try {
+      const result = await bot.setTradingMode(mode);
+      socket.emit('modeResult', result);
+      // Broadcast updated snapshot immediately
+      try { io.emit('snapshot', bot.buildSnapshot()); } catch (_) {}
+    } catch(e) {
+      socket.emit('modeResult', { ok: false, error: e.message });
+    }
+  });
   socket.on('disconnect', () => console.log(`🔌 Left ${socket.id}`));
+});
+
+// REST endpoint for mode toggle
+app.post('/api/mode', express.json(), async (req, res) => {
+  try {
+    const mode = req.body.mode;
+    if (mode !== 'LIVE' && mode !== 'SIM') {
+      return res.status(400).json({ ok: false, error: 'Mode must be LIVE or SIM' });
+    }
+    const result = await bot.setTradingMode(mode);
+    res.json(result);
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get('/api/mode', (req, res) => {
+  try {
+    const snap = bot.buildSnapshot();
+    res.json({ mode: snap.realTrading ? 'LIVE' : 'SIM', ok: true });
+  } catch(e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 async function main() {

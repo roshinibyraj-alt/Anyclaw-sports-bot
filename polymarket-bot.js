@@ -14,7 +14,8 @@ const SCALP_SIZE = 10;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
 const FEE_RATE = 0;
-const REAL_TRADING = !!process.env.POLYMARKET_PRIVATE_KEY;
+let realTradingEnabled = !!process.env.POLYMARKET_PRIVATE_KEY;
+let traderModeInit = false;
 let trader = null;
 
 let balance = INITIAL_CAPITAL;
@@ -559,7 +560,7 @@ function buildSnapshot() {
     })),
     uptime: Math.floor((now - startTime) / 1000),
     discoveryCount, connected: true, timestamp: now,
-    realTrading: REAL_TRADING && !!trader,
+    realTrading: realTradingEnabled && !!trader,
     note: `v${STATE_VERSION} CLOB-only scalper | ${FEE_RATE*100}% fees | 5m scalp=4min, 15m scalp=12min | TP@$${TP_PRICE}`,
   };
 }
@@ -580,7 +581,7 @@ async function tick() {
 async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
   loadState();
-  if (REAL_TRADING) {
+  if (realTradingEnabled) {
     try {
       trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
       trader.setLogFn(logFn);
@@ -615,7 +616,7 @@ async function start(emit, logEmit) {
       trader = null;
     }
   }
-  const mode = REAL_TRADING && trader ? 'LIVE' : 'SIM';
+  const mode = realTradingEnabled && trader ? 'LIVE' : 'SIM';
   logFn('✅ v' + STATE_VERSION + ' BTC 15m | Mode: ' + mode + ' | Capital: $' + fl2(balance));
   await discoverMarkets();
   await tick();
@@ -626,4 +627,46 @@ async function runBacktest() {
   return { overall: { trades: wins + losses, wins, losses, pnl: totalRealizedPnl, fees: totalFees } };
 }
 
-module.exports = { start, buildSnapshot, runBacktest };
+/**
+ * Toggle between LIVE (real) and SIM (simulated) trading mode from dashboard.
+ * Returns { mode: 'LIVE'|'SIM', ok: boolean, error?: string }
+ */
+async function setTradingMode(mode) {
+  if (mode === 'LIVE') {
+    if (trader && trader.apiKey) {
+      realTradingEnabled = true;
+      logFn('🔄 Mode switched to LIVE');
+      return { mode: 'LIVE', ok: true };
+    }
+    // Try to init trader if private key is available
+    if (!process.env.POLYMARKET_PRIVATE_KEY) {
+      logFn('⚠️ Cannot switch to LIVE: no POLYMARKET_PRIVATE_KEY set');
+      return { mode: 'SIM', ok: false, error: 'No POLYMARKET_PRIVATE_KEY env var' };
+    }
+    try {
+      trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
+      trader.setLogFn(logFn);
+      logFn('🔑 Authenticating for LIVE mode...');
+      const authed = await trader.authenticate();
+      if (authed) {
+        realTradingEnabled = true;
+        logFn('✅ Switched to LIVE mode');
+        return { mode: 'LIVE', ok: true };
+      } else {
+        trader = null;
+        logFn('⚠️ Auth failed, staying in SIM mode');
+        return { mode: 'SIM', ok: false, error: 'Auth failed' };
+      }
+    } catch(e) {
+      trader = null;
+      logFn('⚠️ Trader init failed: ' + e.message);
+      return { mode: 'SIM', ok: false, error: e.message };
+    }
+  } else {
+    realTradingEnabled = false;
+    logFn('🔄 Mode switched to SIM');
+    return { mode: 'SIM', ok: true };
+  }
+}
+
+module.exports = { start, buildSnapshot, runBacktest, setTradingMode };

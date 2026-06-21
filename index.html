@@ -61,7 +61,15 @@ main{padding:8px;max-width:1200px;margin:0 auto}
 </style>
 </head>
 <body>
-<header><div class="top-row"><div class="logo"><span class="dot off" id="dot"></span>ScalpBot</div><span id="modeBadge" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:#21262d;color:#8b949e">SIM</span><div class="stats" id="headerStats"></div></div></header>
+<header><div class="top-row">
+  <div class="logo"><span class="dot off" id="dot"></span>ScalpBot</div>
+  <span id="modeBadge" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:#21262d;color:#8b949e;cursor:pointer" onclick="toggleMode()">SIM</span>
+  <label style="display:flex;align-items:center;gap:4px;font-size:9px;color:#8b949e;cursor:pointer">
+    <input type="checkbox" id="modeToggle" onchange="toggleMode()" style="cursor:pointer">
+    <span>LIVE</span>
+  </label>
+  <div class="stats" id="headerStats"></div>
+</div></header>
 <main>
 <div id="noteSection"></div>
 <div class="card"><div class="card-title">Equity Curve</div><div class="chart-wrap"><canvas id="equityChart"></canvas></div></div>
@@ -101,9 +109,43 @@ function updateChart(data){
 function render(d){
   if(!d)return;
   document.getElementById('dot').className=d.connected?'dot on':'dot off';
+  function toggleMode(){
   var modeEl=document.getElementById('modeBadge');
-  if(d.realTrading){modeEl.textContent='🔴 LIVE';modeEl.style.background='#3fb95022';modeEl.style.color='#3fb950';modeEl.style.border='1px solid #3fb95066';}
-  else{modeEl.textContent='🟡 SIM';modeEl.style.background='#21262d';modeEl.style.color='#8b949e';modeEl.style.border='none';}
+  var cb=document.getElementById('modeToggle');
+  if(!modeEl)return;
+  var currentMode=modeEl.textContent.includes('LIVE')?'LIVE':'SIM';
+  var targetMode=currentMode==='LIVE'?'SIM':'LIVE';
+  var btn=modeEl;
+  btn.textContent=targetMode==='LIVE'?'⏳':'⏳';
+  btn.style.opacity='0.5';
+  cb.disabled=true;
+  fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:targetMode})})
+    .then(function(r){return r.json();})
+    .then(function(res){
+      if(res.ok){
+        if(res.mode==='LIVE'){btn.textContent='🔴 LIVE';btn.style.background='#3fb95022';btn.style.color='#3fb950';btn.style.border='1px solid #3fb95066';cb.checked=true;}
+        else{btn.textContent='🟡 SIM';btn.style.background='#21262d';btn.style.color='#8b949e';btn.style.border='none';cb.checked=false;}
+      } else {
+        btn.textContent=currentMode==='LIVE'?'🔴 LIVE':'🟡 SIM';
+        if(currentMode==='LIVE'){btn.style.background='#3fb95022';btn.style.color='#3fb950';btn.style.border='1px solid #3fb95066';}
+        else{btn.style.background='#21262d';btn.style.color='#8b949e';btn.style.border='none';}
+        alert('Mode switch failed: '+(res.error||'unknown'));
+      }
+      btn.style.opacity='1';
+      cb.disabled=false;
+    })
+    .catch(function(err){
+      btn.textContent=currentMode==='LIVE'?'🔴 LIVE':'🟡 SIM';
+      btn.style.opacity='1';
+      cb.disabled=false;
+      alert('Toggle error: '+err.message);
+    });
+}
+
+var modeEl=document.getElementById('modeBadge');
+  var cb=document.getElementById('modeToggle');
+  if(d.realTrading){modeEl.textContent='🔴 LIVE';modeEl.style.background='#3fb95022';modeEl.style.color='#3fb950';modeEl.style.border='1px solid #3fb95066';if(cb)cb.checked=true;}
+  else{modeEl.textContent='🟡 SIM';modeEl.style.background='#21262d';modeEl.style.color='#8b949e';modeEl.style.border='none';if(cb)cb.checked=false;}
 
   // eq,dd cls
   var eq=d.equity||d.balance||0,initEq=d.initialEquity||10000,pnl=eq-initEq,pnlPct=initEq?((pnl/initEq)*100).toFixed(1):'0';

@@ -120,9 +120,10 @@ class PolymarketTrader {
       OrderType.GTC,
     );
 
-    const id = resp?.orderID ?? resp?.id ?? '?';
-    this._log(`📤 ${side} ${size}sh@$${price}  id:${id}`);
-    return id;
+    const id = resp?.orderID ?? resp?.id ?? null;
+    if (!id) throw new Error(`No order ID returned: ${JSON.stringify(resp).substring(0, 100)}`);
+    this._log(`🔏 ORDER submitted id:${id}`);
+    return { id };
   }
 
   // Compat stubs (used by local test harness only)

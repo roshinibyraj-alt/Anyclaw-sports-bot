@@ -530,7 +530,7 @@ async function tick() {
 
 async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
-  logFn('📦 v16 | official ClobClient | ' + (process.env.GIT_COMMIT || 'deploy-' + Date.now().toString(36)));
+  logFn('📦 v17 | V2 protocol fix | ' + (process.env.GIT_COMMIT || 'deploy-' + Date.now().toString(36)));
   
   const funderAddr = process.env.FUNDER_ADDRESS;
   const sigType = process.env.SIGNATURE_TYPE || (funderAddr ? '1' : '0');

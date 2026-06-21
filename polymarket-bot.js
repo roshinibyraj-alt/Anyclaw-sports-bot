@@ -8,7 +8,7 @@ const INITIAL_CAPITAL = 0;
 const GAMMA = 'https://gamma-api.polymarket.com';
 const CLOB = 'https://clob.polymarket.com';
 
-const SCALP_SIZE = 10;
+const SCALP_SIZE = 6;
 const SCALP_OFFSET = 0.02;
 const TP_PRICE = 0.99;
 // Fee rate is fetched dynamically from CLOB for each market

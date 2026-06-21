@@ -61,7 +61,7 @@ main{padding:8px;max-width:1200px;margin:0 auto}
 </style>
 </head>
 <body>
-<header><div class="top-row"><div class="logo"><span class="dot off" id="dot"></span>ScalpBot</div><div class="stats" id="headerStats"></div></div></header>
+<header><div class="top-row"><div class="logo"><span class="dot off" id="dot"></span>ScalpBot</div><span id="modeBadge" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:#21262d;color:#8b949e">SIM</span><div class="stats" id="headerStats"></div></div></header>
 <main>
 <div id="noteSection"></div>
 <div class="card"><div class="card-title">Equity Curve</div><div class="chart-wrap"><canvas id="equityChart"></canvas></div></div>
@@ -101,6 +101,9 @@ function updateChart(data){
 function render(d){
   if(!d)return;
   document.getElementById('dot').className=d.connected?'dot on':'dot off';
+  var modeEl=document.getElementById('modeBadge');
+  if(d.realTrading){modeEl.textContent='🔴 LIVE';modeEl.style.background='#3fb95022';modeEl.style.color='#3fb950';modeEl.style.border='1px solid #3fb95066';}
+  else{modeEl.textContent='🟡 SIM';modeEl.style.background='#21262d';modeEl.style.color='#8b949e';modeEl.style.border='none';}
 
   // eq,dd cls
   var eq=d.equity||d.balance||0,initEq=d.initialEquity||10000,pnl=eq-initEq,pnlPct=initEq?((pnl/initEq)*100).toFixed(1):'0';

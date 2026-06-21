@@ -559,8 +559,21 @@ function buildSnapshot() {
     })),
     uptime: Math.floor((now - startTime) / 1000),
     discoveryCount, connected: true, timestamp: now,
+    realTrading: REAL_TRADING && !!trader,
     note: `v${STATE_VERSION} CLOB-only scalper | ${FEE_RATE*100}% fees | 5m scalp=4min, 15m scalp=12min | TP@$${TP_PRICE}`,
   };
+}
+
+async function tick() {
+  try {
+    tickCount++;
+    if (discoveryCount === 0) { await discoverMarkets(); await fetchClob(); }
+    else if (tickCount % 15 === 0) await discoverMarkets();
+    await fetchClob();
+    strategyTick();
+    saveState();
+    emitFn('snapshot', buildSnapshot());
+  } catch (e) { logFn(`⚠️ ${e.message}`); }
 }
 
 async function tick() {
@@ -578,7 +591,32 @@ async function tick() {
 async function start(emit, logEmit) {
   emitFn = emit; logFn = logEmit; startTime = Date.now();
   loadState();
-  logFn(`✅ v${STATE_VERSION} BTC 15m only | Capital:${fl2(balance)}`);
+  if (REAL_TRADING) {
+    try {
+      trader = new PolymarketTrader(process.env.POLYMARKET_PRIVATE_KEY);
+      trader.setLogFn(logFn);
+      logFn('🔑 Authenticating with Polymarket CLOB...');
+      const authed = await trader.authenticate();
+      if (authed) {
+        logFn('✅ Real trading mode ACTIVE');
+        const realBalance = await trader.getBalance();
+        if (realBalance > 0) {
+          balance = realBalance;
+          initialEquity = realBalance;
+          peakEquity = realBalance;
+          logFn('💰 Real balance loaded: $' + fl2(realBalance));
+        }
+      } else {
+        logFn('⚠️ Auth failed, running in SIMULATION mode');
+        trader = null;
+      }
+    } catch(e) {
+      logFn('⚠️ Trader init failed: ' + e.message + ' - running simulation');
+      trader = null;
+    }
+  }
+  const mode = REAL_TRADING && trader ? 'LIVE' : 'SIM';
+  logFn('✅ v' + STATE_VERSION + ' BTC 15m | Mode: ' + mode + ' | Capital: $' + fl2(balance));
   await discoverMarkets();
   await tick();
   setInterval(tick, 1000);

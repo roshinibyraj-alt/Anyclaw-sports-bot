@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f1f3ed" />
+    <meta name="theme-color" content="#f5f0df" />
     <title>Anyclaw · Paper observation console</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
     <script src="/app.js" defer></script>
   </head>
@@ -59,6 +59,14 @@
         </section>
         <p class="metrics-note" id="accounting-note">Paper P&amp;L uses visible bids and estimated taker fees where available. Maker rebates are not simulated.</p>
 
+        <section class="positions-panel inventory-section">
+          <div class="section-heading compact-heading">
+            <div><p class="eyebrow">SIMULATED INVENTORY / PAPER ONLY</p><h2>Per-market holdings</h2><p class="inference-intro">A quick read on simulated exposure. Each market keeps separate UP and DOWN share totals.</p></div>
+            <span class="count-pill" id="position-total">—</span>
+          </div>
+          <div id="positions-list" class="positions-list"><p class="table-state">Waiting for position data…</p></div>
+        </section>
+
         <section class="activity-counts" aria-label="Activity counts">
           <div class="count-label">ACTIVITY <span class="count-sub">observed ≠ simulated</span></div>
           <div class="count-item source-count"><span class="count-dot"></span><span>Source trades</span><strong id="source-count">—</strong></div>
@@ -107,10 +115,6 @@
         </section>
 
         <section class="lower-grid">
-          <article class="positions-panel">
-            <div class="section-heading compact-heading"><div><p class="eyebrow">SIMULATED INVENTORY</p><h2>Per-market holdings</h2><p class="inference-intro">Each market keeps separate UP and DOWN share totals.</p></div><span class="count-pill" id="position-total">—</span></div>
-            <div id="positions-list" class="positions-list"><p class="table-state">Waiting for position data…</p></div>
-          </article>
           <article class="inference-panel">
             <div class="section-heading compact-heading"><div><p class="eyebrow">READ WITH CAUTION</p><h2>Inferred patterns</h2></div><span class="inferred-tag">INFERRED</span></div>
             <p class="inference-intro">Heuristics from observed samples—not confirmed intent or guaranteed outcomes.</p>

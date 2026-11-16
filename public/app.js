@@ -279,25 +279,48 @@
   }
 
   function renderPositions(markets) {
-    const positions = Array.isArray(markets) ? markets : [];
-    setText("position-total", `${positions.length} ${positions.length === 1 ? "position" : "positions"}`);
+    const marketGroups = Array.isArray(markets) ? markets : [];
+    setText("position-total", `${marketGroups.length} ${marketGroups.length === 1 ? "market" : "markets"}`);
     positionsList.replaceChildren();
-    if (!positions.length) {
+    if (!marketGroups.length) {
       positionsList.append(el("p", "table-state", "No open paper positions."));
       return;
     }
-    for (const market of positions) {
-      const row = el("div", "position-row");
-      const name = el("div", "position-name", market.title || "Untitled market");
-      name.append(el("small", "", [market.asset, market.outcome, market.status].filter(Boolean).join(" · ") || "—"));
-      row.append(name);
-      row.append(positionValue("Shares", amount(market.shares)));
-      row.append(positionValue("Mark / bid", finite(market.markBid) ? amount(market.markBid, 4) : "—"));
-      const pnl = positionValue("Open P&L", money(market.unrealizedPnl));
-      signedClass(pnl.querySelector("b"), market.unrealizedPnl);
-      row.append(pnl);
-      positionsList.append(row);
+    for (const market of marketGroups) {
+      const card = el("article", "market-holdings-card");
+      const header = el("div", "market-holdings-header");
+      const identity = el("div", "market-holdings-identity");
+      identity.append(
+        el("strong", "", market.title || "Untitled market"),
+        el("small", "", [market.asset, market.slug].filter(Boolean).join(" · ") || "Market window")
+      );
+      header.append(identity, el("span", `market-holdings-status ${String(market.status || "open").toLowerCase()}`, market.status || "OPEN"));
+      card.append(header);
+
+      const sides = el("div", "market-side-grid");
+      sides.append(renderHoldingSide("UP", market.up), renderHoldingSide("DOWN", market.down));
+      card.append(sides);
+      positionsList.append(card);
     }
+  }
+
+  function renderHoldingSide(label, side = {}) {
+    const box = el("section", `holding-side holding-side-${label.toLowerCase()}`);
+    const shares = Number(side.shares) || 0;
+    const heading = el("div", "holding-side-heading");
+    heading.append(el("strong", "", label), el("span", "", `${amount(shares)} shares`));
+    box.append(heading);
+
+    const details = el("div", "holding-side-details");
+    details.append(
+      positionValue("Average cost", finite(side.averageCost) ? amount(side.averageCost, 4) : "—"),
+      positionValue("Mark / bid", finite(side.markBid) ? amount(side.markBid, 4) : "—"),
+      positionValue("Market value", money(side.marketValue)),
+      positionValue("Open P&L", money(side.unrealizedPnl))
+    );
+    signedClass(details.lastChild.querySelector("b"), side.unrealizedPnl);
+    box.append(details);
+    return box;
   }
 
   function positionValue(label, value) {

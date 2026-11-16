@@ -3,6 +3,7 @@
 const { fetchRecentActivity, normalizeTrade, tradeId } = require('./polymarket');
 const { analyzeTrades, classifyAsset, marketTiming } = require('./strategy-engine');
 const { PaperCopier } = require('./paper-copier');
+const { groupMarketPositions } = require('./market-positions');
 
 const SOURCE_HISTORY_LIMIT = 10000;
 const SEEN_ID_LIMIT = 50000;
@@ -234,7 +235,7 @@ class WalletMonitor {
         markedPositions: knownMarkCount,
         feeStatus,
       },
-      markets: positions,
+      markets: groupMarketPositions(positions),
       recentSourceTrades: sourceTrades.map(trade => ({
         ...trade,
         marketTitle: trade.title,

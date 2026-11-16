@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f1f3ed" />
+    <title>Anyclaw · Paper observation console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Anyclaw home">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span>anyclaw<span class="brand-light"> / observe</span></span>
+        </a>
+        <div class="top-meta">
+          <span class="feed-status"><i id="connection-dot"></i><span id="connection-text">Connecting</span></span>
+          <span class="top-divider"></span>
+          <span class="mono" id="updated-at">—</span>
+          <button class="icon-button" id="refresh-button" type="button" aria-label="Refresh snapshot" title="Refresh snapshot"><span class="refresh-glyph">↻</span></button>
+        </div>
+      </header>
+
+      <main>
+        <section class="masthead">
+          <div class="masthead-copy">
+            <p class="eyebrow">PUBLIC WALLET · PAPER FOLLOWING</p>
+            <h1>See the signal.<br /><em>Keep the boundary.</em></h1>
+            <p class="intro">An observation console for public activity and its simulated paper copies. Source fills are facts; strategy notes are inference.</p>
+          </div>
+          <aside class="safety-card">
+            <div class="safety-top"><span class="safety-symbol">!</span><span>EXECUTION MODE</span></div>
+            <strong>PAPER ONLY</strong>
+            <p>No live orders. Copier controls affect paper processing only.</p>
+            <div class="safety-rule"><span id="copier-state">COPIER —</span><button type="button" id="copier-toggle" class="toggle-button" disabled>Loading</button></div>
+          </aside>
+        </section>
+
+        <section class="wallet-strip" aria-label="Watched wallet">
+          <div><span class="eyebrow">WATCHING SOURCE WALLET</span><span class="wallet-address mono" id="wallet-address">Waiting for snapshot…</span></div>
+          <div class="watcher-meta">
+            <span><span class="eyebrow">WATCHER</span><b id="watcher-status">—</b></span>
+            <span><span class="eyebrow">LAST POLL</span><b id="last-poll">—</b></span>
+            <span><span class="eyebrow">LAST FILL LAG</span><b id="watcher-lag">—</b></span>
+          </div>
+        </section>
+
+        <section class="metrics" aria-label="Paper performance summary">
+          <article class="metric metric-primary"><span class="metric-label">Paper balance</span><strong id="paper-balance">—</strong><span class="metric-caption">simulated capital</span></article>
+          <article class="metric"><span class="metric-label">Total P&amp;L</span><strong id="total-pnl">—</strong><span class="metric-caption">realized + open</span></article>
+          <article class="metric"><span class="metric-label">Realized</span><strong id="realized-pnl">—</strong><span class="metric-caption">paper positions closed</span></article>
+          <article class="metric"><span class="metric-label">Unrealized</span><strong id="unrealized-pnl">—</strong><span class="metric-caption">paper positions open</span></article>
+          <article class="metric"><span class="metric-label">Win rate</span><strong id="win-rate">—</strong><span class="metric-caption">paper outcomes</span></article>
+        </section>
+        <p class="metrics-note" id="accounting-note">Paper P&amp;L uses visible bids and estimated taker fees where available. Maker rebates are not simulated.</p>
+
+        <section class="activity-counts" aria-label="Activity counts">
+          <div class="count-label">ACTIVITY <span class="count-sub">observed ≠ simulated</span></div>
+          <div class="count-item source-count"><span class="count-dot"></span><span>Source trades</span><strong id="source-count">—</strong></div>
+          <div class="count-item paper-count"><span class="count-dot"></span><span>Paper copies</span><strong id="copy-count">—</strong></div>
+          <div class="count-item"><span>Filled</span><strong id="filled-count">—</strong></div>
+          <div class="count-item"><span>Missed</span><strong id="missed-count">—</strong></div>
+          <div class="count-item"><span>Open positions</span><strong id="open-count">—</strong></div>
+          <div class="count-item multiplier"><span>Copy multiplier</span><strong id="multiplier">—</strong></div>
+        </section>
+
+        <section class="activity-section">
+          <div class="section-heading">
+            <div><p class="eyebrow">TAPE / LATEST FIRST</p><h2>Activity stream</h2></div>
+            <div class="stream-controls">
+              <label class="search-wrap"><span class="sr-only">Filter activity</span><span aria-hidden="true">⌕</span><input type="search" id="activity-search" placeholder="Filter markets…" /></label>
+              <div class="segmented" role="group" aria-label="Activity type filter">
+                <button class="segment active" data-filter="all" type="button">All</button>
+                <button class="segment" data-filter="source" type="button">Source</button>
+                <button class="segment" data-filter="copies" type="button">Copies</button>
+              </div>
+            </div>
+          </div>
+          <div class="stream-grid">
+            <article class="stream-panel">
+              <header class="panel-heading">
+                <div><span class="source-marker"></span><h3>Source activity</h3></div><span class="panel-note">PUBLIC WALLET FILLS</span>
+              </header>
+              <div class="table-wrap"><table>
+                <thead><tr><th>Market / asset</th><th>Side</th><th>Source price</th><th>Shares · value</th><th>Time / window age</th></tr></thead>
+                <tbody id="source-rows"><tr><td colspan="5" class="table-state">Waiting for source activity…</td></tr></tbody>
+              </table></div>
+              <div class="mobile-list" id="source-mobile"></div>
+            </article>
+            <article class="stream-panel paper-panel">
+              <header class="panel-heading">
+                <div><span class="paper-marker"></span><h3>Paper copies</h3></div><span class="panel-note">SIMULATED FILLS ONLY</span>
+              </header>
+              <div class="table-wrap"><table>
+                <thead><tr><th>Market / asset</th><th>Side</th><th>Requested → filled</th><th>Source → paper price</th><th>Status / lag</th></tr></thead>
+                <tbody id="copy-rows"><tr><td colspan="5" class="table-state">Waiting for paper copies…</td></tr></tbody>
+              </table></div>
+              <div class="mobile-list" id="copy-mobile"></div>
+            </article>
+          </div>
+          <p class="stream-footnote"><span class="source-marker"></span> Source activity is observed on the public wallet. <span class="paper-marker"></span> Paper copies are local simulation records, not source-wallet trades.</p>
+        </section>
+
+        <section class="lower-grid">
+          <article class="positions-panel">
+            <div class="section-heading compact-heading"><div><p class="eyebrow">SIMULATED INVENTORY</p><h2>Open positions</h2></div><span class="count-pill" id="position-total">—</span></div>
+            <div id="positions-list" class="positions-list"><p class="table-state">Waiting for position data…</p></div>
+          </article>
+          <article class="inference-panel">
+            <div class="section-heading compact-heading"><div><p class="eyebrow">READ WITH CAUTION</p><h2>Inferred patterns</h2></div><span class="inferred-tag">INFERRED</span></div>
+            <p class="inference-intro">Heuristics from observed samples—not confirmed intent or guaranteed outcomes.</p>
+            <div id="patterns-list" class="patterns-list"><p class="table-state">Waiting for inference data…</p></div>
+            <div class="inference-footer">
+              <div><span class="eyebrow">POSITION SIZING</span><strong id="sizing-note">—</strong><span class="inferred-tag small-tag">INFERRED</span></div>
+              <div><span class="eyebrow">TRADE CADENCE</span><strong id="cadence-note">—</strong><span class="inferred-tag small-tag">INFERRED</span></div>
+            </div>
+            <p class="limits-note"><span>FEED LIMIT</span><span id="limits-note">Order type details are not exposed by the public feed.</span></p>
+          </article>
+        </section>
+      </main>
+      <footer class="footer"><span>ANYCLAW <span class="footer-sep">/</span> OBSERVATION, NOT EXECUTION</span><span id="sample-markets">Public market data · heuristics labeled inferred</span></footer>
+      <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    </div>
+  </body>
+</html>

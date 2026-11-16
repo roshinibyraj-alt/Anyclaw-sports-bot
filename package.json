@@ -1,16 +1,14 @@
 {
-  "name": "gabagool-bot",
-  "version": "8.4",
+  "name": "polymarket-wallet-copy-paper",
+  "version": "1.0.0",
   "private": true,
-  "description": "Polymarket BTC 15m scalping bot — Railway deploy",
-  "main": "index.js",
-  "scripts": { "start": "node index.js" },
-  "dependencies": {
-    "@polymarket/builder-relayer-client": "latest",
-    "@polymarket/clob-client-v2": "latest",
-    "ethers": "^6.17.0",
-    "express": "^4.21.0",
-    "socket.io": "^4.7.0",
-    "viem": "latest"
+  "description": "Paper-only Polymarket wallet observer, trade copier, and strategy analysis dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

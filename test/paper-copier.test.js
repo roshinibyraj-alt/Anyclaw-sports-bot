@@ -7,6 +7,7 @@ const { PaperCopier, sweepBook } = require('../src/paper-copier');
 function state() {
   return {
     sourceWallet: '0x0000000000000000000000000000000000000001',
+    sourceTrades: [],
     paper: {
       startingBalance: 100,
       cash: 100,
@@ -119,9 +120,20 @@ test('reports insufficient cash separately from an empty order book', async () =
   assert.equal(ledger.paper.cash, 0);
 });
 
-test('official market resolution returns winner payout and records settled shares', async () => {
+test('official market resolution pays the indexed winner and zeros the loser', async () => {
   const ledger = state();
   ledger.paper.cash = 96;
+  ledger.sourceTrades.push({
+    tokenId: 'token',
+    conditionId: 'market',
+    outcome: 'Up',
+    outcomeIndex: 0,
+  }, {
+    tokenId: 'down-token',
+    conditionId: 'market',
+    outcome: 'Down',
+    outcomeIndex: 1,
+  });
   ledger.paper.positions.token = {
     tokenId: 'token',
     conditionId: 'market',
@@ -129,29 +141,54 @@ test('official market resolution returns winner payout and records settled share
     title: 'Bitcoin Up or Down',
     asset: 'BTC',
     outcome: 'Up',
+    outcomeIndex: undefined,
     shares: 10,
     costBasis: 4,
     averageCost: 0.4,
     markBid: 0.99,
     status: 'open',
   };
+  ledger.paper.positions['down-token'] = {
+    tokenId: 'down-token',
+    conditionId: 'market',
+    slug: 'btc-updown-5m-1000',
+    title: 'Bitcoin Up or Down',
+    asset: 'BTC',
+    outcome: 'Down',
+    outcomeIndex: 1,
+    shares: 5,
+    costBasis: 3,
+    averageCost: 0.6,
+    markBid: 0.01,
+    status: 'open',
+  };
   const copier = new PaperCopier(ledger, {
     fetchBook: async () => ({ asks: [], bids: [] }),
     fetchFeeRate: async () => ({ rate: null, status: 'unavailable' }),
-    fetchMarket: async () => ({
-      closed: true,
-      outcomes: '["Up","Down"]',
-      outcomePrices: '["1","0"]',
-    }),
+    fetchMarket: async () => { throw new Error('Should not need a slug lookup.'); },
+    fetchResolutions: async conditionIds => {
+      assert.deepEqual(conditionIds, ['market']);
+      return [{
+        condition_id: 'MARKET',
+        status: 'resolved',
+        payouts: [1000000, 0],
+      }];
+    },
   });
 
   await copier.refreshMarksAndSettle();
 
   assert.equal(ledger.paper.cash, 106);
-  assert.equal(ledger.paper.realizedPnl, 6);
+  assert.equal(ledger.paper.realizedPnl, 3);
   assert.equal(ledger.paper.positions.token.status, 'resolved');
   assert.equal(ledger.paper.positions.token.shares, 0);
-  assert.equal(ledger.paper.settlements[0].shares, 10);
-  assert.equal(ledger.paper.settlements[0].payout, 10);
-  assert.equal(ledger.paper.settlements[0].pnl, 6);
+  assert.equal(ledger.paper.positions.token.resolvedOutcome, 'Up');
+  assert.equal(ledger.paper.positions['down-token'].status, 'resolved');
+  assert.equal(ledger.paper.positions['down-token'].resolvedOutcome, 'Up');
+  assert.equal(ledger.paper.settlements[0].shares, 5);
+  assert.equal(ledger.paper.settlements[0].payout, 0);
+  assert.equal(ledger.paper.settlements[0].pnl, -3);
+  assert.equal(ledger.paper.settlements[1].shares, 10);
+  assert.equal(ledger.paper.settlements[1].payout, 10);
+  assert.equal(ledger.paper.settlements[1].pnl, 6);
 });

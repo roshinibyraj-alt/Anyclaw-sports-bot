@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { findEventMarket } = require('../src/polymarket');
+const { findEventMarket, normalizeTrade } = require('../src/polymarket');
 
 test('finds the nested market returned by Gamma event lookup', () => {
   const market = {
@@ -29,4 +29,26 @@ test('does not mistake an unrelated event market for a settlement', () => {
   assert.equal(findEventMarket([
     { slug: 'another-market', markets: [{ slug: 'another-market' }] },
   ], 'btc-updown-5m-1000'), null);
+});
+
+test('keeps a missing outcome index unknown instead of treating it as UP', () => {
+  const trade = normalizeTrade({
+    timestamp: 1000,
+    price: 0.4,
+    size: 2,
+    outcome_index: null,
+    side: 'BUY',
+  });
+  assert.equal(trade.outcomeIndex, null);
+});
+
+test('preserves explicit outcome index zero from the source trade', () => {
+  const trade = normalizeTrade({
+    timestamp: 1000,
+    price: 0.4,
+    size: 2,
+    outcome_index: 0,
+    side: 'BUY',
+  });
+  assert.equal(trade.outcomeIndex, 0);
 });

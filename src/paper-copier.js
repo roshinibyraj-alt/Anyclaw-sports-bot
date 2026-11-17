@@ -86,6 +86,7 @@ class PaperCopier {
     this.fetchBook = dependencies.fetchBook;
     this.fetchFeeRate = dependencies.fetchFeeRate;
     this.fetchMarket = dependencies.fetchMarket;
+    this.fetchResolutions = dependencies.fetchResolutions || (async () => []);
     this.bookCache = new Map();
     this.feeCache = new Map();
   }
@@ -268,6 +269,7 @@ class PaperCopier {
       markBid: null,
       status: 'open',
     };
+    if (Number.isInteger(source.outcomeIndex)) position.outcomeIndex = source.outcomeIndex;
     position.shares = round(position.shares + fill.filledShares);
     position.costBasis = round(position.costBasis + fill.grossValue + fill.fees, 8);
     position.averageCost = round(position.costBasis / position.shares, 6);
@@ -308,7 +310,11 @@ class PaperCopier {
     const groups = new Map();
     for (const position of open) {
       const groupKey = position.conditionId || position.slug || position.tokenId;
-      const group = groups.get(groupKey) || { slug: position.slug, positions: [] };
+      const group = groups.get(groupKey) || {
+        slug: position.slug,
+        conditionId: position.conditionId,
+        positions: [],
+      };
       group.positions.push(position);
       groups.set(groupKey, group);
     }
@@ -325,41 +331,100 @@ class PaperCopier {
         }
       });
     }
-    for (const group of groups.values()) {
-      if (!group.slug) continue;
+    if (groups.size) {
       work.push(async () => {
+        const resolutionGroups = [...groups.values()].filter(group => group.conditionId);
+        if (!resolutionGroups.length) return;
         try {
-          const market = await this.fetchMarket(group.slug);
-          if (market) this.trySettleGroup(group, market);
+          const resolutions = await this.fetchResolutions(
+            resolutionGroups.map(group => group.conditionId),
+          );
+          const byCondition = new Map((resolutions || []).map(row => [
+            String(row.condition_id || '').toLowerCase(),
+            row,
+          ]));
+          for (const group of resolutionGroups) {
+            const resolution = byCondition.get(String(group.conditionId).toLowerCase());
+            if (String(resolution?.status || '').toLowerCase() !== 'resolved') continue;
+            await this.ensureOutcomeIndexes(group);
+            this.trySettleGroup(group, resolution);
+          }
         } catch (error) {
-          for (const position of group.positions) position.resolutionError = error.message;
+          for (const group of resolutionGroups) {
+            for (const position of group.positions) position.resolutionError = error.message;
+          }
         }
       });
     }
     await runWithConcurrency(work, 6);
   }
 
-  trySettleGroup(group, market) {
-    const outcomes = parseArray(market.outcomes);
-    const prices = parseArray(market.outcomePrices).map(Number);
-    const closed = market.closed === true || market.resolved === true ||
-      String(market.closed).toLowerCase() === 'true' ||
-      String(market.resolved).toLowerCase() === 'true';
-    if (!closed || !outcomes.length || outcomes.length !== prices.length) return;
-    const winnerIndex = prices.findIndex(price => Number.isFinite(price) && price >= 0.99);
-    if (winnerIndex < 0) return;
-    const winningOutcome = String(outcomes[winnerIndex]).toLowerCase();
+  async ensureOutcomeIndexes(group) {
+    const sourceTrades = this.state.sourceTrades || [];
+    for (const position of group.positions) {
+      if (Number.isInteger(position.outcomeIndex)) continue;
+      let sourceTrade = null;
+      for (let index = sourceTrades.length - 1; index >= 0; index -= 1) {
+        const trade = sourceTrades[index];
+        if (
+          trade.tokenId === position.tokenId &&
+          String(trade.conditionId || '').toLowerCase() === String(group.conditionId).toLowerCase() &&
+          Number.isInteger(trade.outcomeIndex)
+        ) {
+          sourceTrade = trade;
+          break;
+        }
+      }
+      if (sourceTrade) position.outcomeIndex = sourceTrade.outcomeIndex;
+    }
+
+    if (group.positions.every(position => Number.isInteger(position.outcomeIndex))) return;
+    if (!group.slug || !this.fetchMarket) return;
+    const market = await this.fetchMarket(group.slug);
+    const outcomes = parseArray(market?.outcomes).map(value => String(value).toLowerCase());
+    if (!outcomes.length) return;
+    for (const position of group.positions) {
+      if (Number.isInteger(position.outcomeIndex)) continue;
+      const index = outcomes.findIndex(value =>
+        value === String(position.outcome || '').toLowerCase());
+      if (index >= 0) position.outcomeIndex = index;
+    }
+  }
+
+  trySettleGroup(group, resolution) {
+    const payouts = parseArray(resolution.payouts).map(Number);
+    const totalPayout = payouts.reduce((total, payout) =>
+      total + (Number.isFinite(payout) && payout > 0 ? payout : 0), 0);
+    if (totalPayout <= 0 || !payouts.length) return;
+    if (group.positions.some(position =>
+      !Number.isInteger(position.outcomeIndex) ||
+      position.outcomeIndex < 0 ||
+      position.outcomeIndex >= payouts.length)) {
+      for (const position of group.positions) {
+        position.resolutionError = 'Could not map this share to its official outcome index.';
+      }
+      return;
+    }
+    const winnerIndex = payouts.reduce((best, value, index) =>
+      value > payouts[best] ? index : best, 0);
+    const sourceTrades = this.state.sourceTrades || [];
+    const winningOutcome = sourceTrades.find(trade =>
+      String(trade.conditionId || '').toLowerCase() === String(group.conditionId).toLowerCase() &&
+      trade.outcomeIndex === winnerIndex)?.outcome ||
+      group.positions.find(position => position.outcomeIndex === winnerIndex)?.outcome ||
+      `Outcome ${winnerIndex + 1}`;
     for (const position of group.positions) {
       if (position.status !== 'open') continue;
       const settledShares = position.shares;
-      const payout = String(position.outcome).toLowerCase() === winningOutcome ? position.shares : 0;
+      const payoutRate = Math.max(0, payouts[position.outcomeIndex]) / totalPayout;
+      const payout = round(position.shares * payoutRate, 8);
       const pnl = payout - position.costBasis;
       this.state.paper.cash = round(this.state.paper.cash + payout, 8);
       this.state.paper.realizedPnl = round(this.state.paper.realizedPnl + pnl, 8);
       position.shares = 0;
-      position.markBid = payout > 0 ? 1 : 0;
+      position.markBid = payoutRate;
       position.status = 'resolved';
-      position.resolvedOutcome = outcomes[winnerIndex];
+      position.resolvedOutcome = winningOutcome;
       position.settlementValue = payout;
       position.settlementPnl = round(pnl, 8);
       position.closedAt = new Date().toISOString();
@@ -370,7 +435,7 @@ class PaperCopier {
         marketTitle: position.title,
         asset: position.asset,
         outcome: position.outcome,
-        winningOutcome: outcomes[winnerIndex],
+        winningOutcome,
         shares: settledShares,
         costBasis: position.costBasis,
         payout,

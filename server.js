@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { loadState, saveState } = require('./src/storage');
-const { fetchBook, fetchFeeRate, fetchMarket } = require('./src/polymarket');
+const { fetchBook, fetchFeeRate, fetchMarket, fetchResolutions } = require('./src/polymarket');
 const { WalletMonitor } = require('./src/monitor');
 
 const DEFAULT_WALLET = '0xeebde7a0e019a63e6b476eb425505b7b3e6eba30';
@@ -29,7 +29,7 @@ if (process.env.COPY_MULTIPLIER !== undefined) {
 const monitor = new WalletMonitor({
   state,
   saveState,
-  dependencies: { fetchBook, fetchFeeRate, fetchMarket },
+  dependencies: { fetchBook, fetchFeeRate, fetchMarket, fetchResolutions },
   pollIntervalMs: process.env.POLL_INTERVAL_MS || 1000,
 });
 const clients = new Set();

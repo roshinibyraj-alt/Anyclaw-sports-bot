@@ -80,6 +80,12 @@ function normalizeTrade(row) {
   const timestamp = Number(row.timestamp);
   const price = Number(row.price);
   const size = Number(row.size);
+  const hasOutcomeIndex = row.outcome_index !== undefined &&
+    row.outcome_index !== null &&
+    row.outcome_index !== '';
+  const outcomeIndex = hasOutcomeIndex && Number.isFinite(Number(row.outcome_index))
+    ? Number(row.outcome_index)
+    : null;
   return {
     id: tradeId(row),
     type: 'TRADE',
@@ -90,7 +96,7 @@ function normalizeTrade(row) {
     eventSlug: row.event_slug || null,
     title: row.title || row.slug || 'Untitled market',
     outcome: row.outcome || 'Unknown',
-    outcomeIndex: Number.isFinite(Number(row.outcome_index)) ? Number(row.outcome_index) : null,
+    outcomeIndex,
     side: String(row.side || '').toUpperCase(),
     timestamp: Number.isFinite(timestamp) ? timestamp : Math.floor(Date.now() / 1000),
     price: Number.isFinite(price) ? price : null,
@@ -127,6 +133,19 @@ async function fetchMarket(slug) {
   return findEventMarket(payload, slug);
 }
 
+async function fetchResolutions(conditionIds) {
+  const uniqueIds = [...new Set((conditionIds || []).filter(Boolean).map(String))];
+  const chunks = [];
+  for (let index = 0; index < uniqueIds.length; index += 20) {
+    chunks.push(uniqueIds.slice(index, index + 20));
+  }
+  const payloads = await Promise.all(chunks.map(ids => {
+    const query = new URLSearchParams({ condition: ids.join(',') });
+    return fetchJson(`${DATA_API}/v2/resolutions?${query}`);
+  }));
+  return payloads.flatMap(payload => Array.isArray(payload?.data) ? payload.data : []);
+}
+
 function findEventMarket(payload, requestedSlug) {
   const events = Array.isArray(payload) ? payload : payload ? [payload] : [];
   for (const event of events) {
@@ -155,6 +174,7 @@ module.exports = {
   fetchBook,
   fetchFeeRate,
   fetchMarket,
+  fetchResolutions,
   findEventMarket,
   normalizeTrade,
   tradeId,

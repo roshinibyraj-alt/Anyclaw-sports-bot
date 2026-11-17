@@ -197,6 +197,34 @@ class WalletMonitor {
     const sourceTrades = this.state.sourceTrades.slice(-100).reverse();
     const copyEvents = this.state.copyEvents.slice(0, 100);
     const analysis = analyzeTrades(this.state.sourceTrades);
+    const settledMarketKeys = new Set();
+    const recentSettledPositions = [];
+    for (const entry of settled) {
+      const marketKey = String(entry.conditionId || entry.slug || entry.tokenId);
+      if (!settledMarketKeys.has(marketKey) && settledMarketKeys.size >= 50) continue;
+      settledMarketKeys.add(marketKey);
+      recentSettledPositions.push({
+        conditionId: entry.conditionId,
+        slug: entry.slug,
+        marketTitle: entry.marketTitle,
+        title: entry.marketTitle,
+        asset: entry.asset,
+        outcome: entry.outcome,
+        status: 'resolved',
+        resolvedOutcome: entry.winningOutcome,
+        shares: Number(entry.shares) || 0,
+        costBasis: Number(entry.costBasis) || 0,
+        averageCost: Number(entry.shares) > 0
+          ? Number(entry.costBasis || 0) / Number(entry.shares)
+          : null,
+        markBid: Number(entry.shares) > 0
+          ? Number(entry.payout || 0) / Number(entry.shares)
+          : null,
+        marketValue: Number(entry.payout) || 0,
+        unrealizedPnl: Number(entry.pnl) || 0,
+        updatedAt: entry.settledAt || null,
+      });
+    }
 
     return {
       mode: 'PAPER_ONLY',
@@ -235,7 +263,7 @@ class WalletMonitor {
         markedPositions: knownMarkCount,
         feeStatus,
       },
-      markets: groupMarketPositions(positions),
+      markets: groupMarketPositions([...positions, ...recentSettledPositions]),
       recentSourceTrades: sourceTrades.map(trade => ({
         ...trade,
         marketTitle: trade.title,

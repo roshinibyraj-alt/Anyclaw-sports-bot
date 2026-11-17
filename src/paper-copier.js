@@ -196,6 +196,11 @@ class PaperCopier {
       const levels = source.side === 'BUY' ? book.asks : book.bids;
       const cash = source.side === 'BUY' ? this.state.paper.cash : Infinity;
       const result = sweepBook(levels, requestedToExecute, source.side, cash, fee.rate);
+      const maxBookFill = source.side === 'BUY'
+        ? sweepBook(levels, requestedToExecute, source.side, Infinity, fee.rate).filledShares
+        : requestedToExecute;
+      const limitedByCash = source.side === 'BUY' &&
+        result.filledShares + 0.000001 < maxBookFill;
       result.feeStatus = fee.status;
       result.processedAtMs = processedAtMs;
       result.requestedShares = requested;
@@ -216,11 +221,17 @@ class PaperCopier {
             ? 'partial'
             : 'filled',
         message: result.filledShares <= 0
-          ? `No visible ${source.side === 'BUY' ? 'ask' : 'bid'} liquidity at copy time.`
+          ? levels.length === 0
+            ? `No visible ${source.side === 'BUY' ? 'ask' : 'bid'} liquidity at copy time.`
+            : limitedByCash
+              ? `Insufficient paper cash to copy this buy; available balance was $${round(cash, 2)}.`
+              : 'No executable quantity was available at copy time.'
           : requested - result.filledShares > 0.000001
-            ? source.side === 'SELL' && requestedToExecute < requested
-              ? 'Paper inventory was smaller than the source sell; only held shares could be simulated.'
-              : 'Visible book depth or paper cash filled only part of the copied size.'
+            ? limitedByCash
+              ? `Available paper cash limited this buy to ${round(result.filledShares)} shares.`
+              : source.side === 'SELL' && requestedToExecute < requested
+                ? 'Paper inventory was smaller than the source sell; only held shares could be simulated.'
+                : 'Visible book depth filled only part of the copied size.'
             : '',
       });
       this.addEvent(event);
@@ -340,6 +351,7 @@ class PaperCopier {
     const winningOutcome = String(outcomes[winnerIndex]).toLowerCase();
     for (const position of group.positions) {
       if (position.status !== 'open') continue;
+      const settledShares = position.shares;
       const payout = String(position.outcome).toLowerCase() === winningOutcome ? position.shares : 0;
       const pnl = payout - position.costBasis;
       this.state.paper.cash = round(this.state.paper.cash + payout, 8);
@@ -359,6 +371,7 @@ class PaperCopier {
         asset: position.asset,
         outcome: position.outcome,
         winningOutcome: outcomes[winnerIndex],
+        shares: settledShares,
         costBasis: position.costBasis,
         payout,
         pnl: round(pnl, 8),

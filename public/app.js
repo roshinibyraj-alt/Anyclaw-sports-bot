@@ -298,13 +298,16 @@
       card.append(header);
 
       const sides = el("div", "market-side-grid");
-      sides.append(renderHoldingSide("UP", market.up), renderHoldingSide("DOWN", market.down));
+      sides.append(
+        renderHoldingSide("UP", market.up, market.status),
+        renderHoldingSide("DOWN", market.down, market.status)
+      );
       card.append(sides);
       positionsList.append(card);
     }
   }
 
-  function renderHoldingSide(label, side = {}) {
+  function renderHoldingSide(label, side = {}, marketStatus = "open") {
     const box = el("section", `holding-side holding-side-${label.toLowerCase()}`);
     const shares = Number(side.shares) || 0;
     const heading = el("div", "holding-side-heading");
@@ -316,7 +319,7 @@
       positionValue("Average cost", finite(side.averageCost) ? amount(side.averageCost, 4) : "—"),
       positionValue("Mark / bid", finite(side.markBid) ? amount(side.markBid, 4) : "—"),
       positionValue("Market value", money(side.marketValue)),
-      positionValue("Open P&L", money(side.unrealizedPnl))
+      positionValue(String(marketStatus).toLowerCase() === "resolved" ? "Settled P&L" : "Open P&L", money(side.unrealizedPnl))
     );
     signedClass(details.lastChild.querySelector("b"), side.unrealizedPnl);
     box.append(details);

@@ -94,3 +94,64 @@ test('paper copier does not create a position when visible depth is missing', as
   assert.equal(ledger.paper.cash, 100);
   assert.equal(Object.keys(ledger.paper.positions).length, 0);
 });
+
+test('reports insufficient cash separately from an empty order book', async () => {
+  const ledger = state();
+  ledger.paper.cash = 0;
+  const copier = new PaperCopier(ledger, {
+    fetchBook: async () => ({
+      asks: [{ price: 0.4, size: 10 }],
+      bids: [],
+    }),
+    fetchFeeRate: async () => ({ rate: null, status: 'unavailable' }),
+    fetchMarket: async () => null,
+  });
+
+  const result = await copier.mirror({
+    id: 'buy-no-cash', timestamp: 1000, conditionId: 'market', tokenId: 'token',
+    slug: 'btc-updown-5m-1000', title: 'Bitcoin Up or Down', outcome: 'Up',
+    side: 'BUY', price: 0.4, size: 5,
+  });
+
+  assert.equal(result.status, 'missed');
+  assert.match(result.message, /Insufficient paper cash/);
+  assert.doesNotMatch(result.message, /No visible ask liquidity/);
+  assert.equal(ledger.paper.cash, 0);
+});
+
+test('official market resolution returns winner payout and records settled shares', async () => {
+  const ledger = state();
+  ledger.paper.cash = 96;
+  ledger.paper.positions.token = {
+    tokenId: 'token',
+    conditionId: 'market',
+    slug: 'btc-updown-5m-1000',
+    title: 'Bitcoin Up or Down',
+    asset: 'BTC',
+    outcome: 'Up',
+    shares: 10,
+    costBasis: 4,
+    averageCost: 0.4,
+    markBid: 0.99,
+    status: 'open',
+  };
+  const copier = new PaperCopier(ledger, {
+    fetchBook: async () => ({ asks: [], bids: [] }),
+    fetchFeeRate: async () => ({ rate: null, status: 'unavailable' }),
+    fetchMarket: async () => ({
+      closed: true,
+      outcomes: '["Up","Down"]',
+      outcomePrices: '["1","0"]',
+    }),
+  });
+
+  await copier.refreshMarksAndSettle();
+
+  assert.equal(ledger.paper.cash, 106);
+  assert.equal(ledger.paper.realizedPnl, 6);
+  assert.equal(ledger.paper.positions.token.status, 'resolved');
+  assert.equal(ledger.paper.positions.token.shares, 0);
+  assert.equal(ledger.paper.settlements[0].shares, 10);
+  assert.equal(ledger.paper.settlements[0].payout, 10);
+  assert.equal(ledger.paper.settlements[0].pnl, 6);
+});

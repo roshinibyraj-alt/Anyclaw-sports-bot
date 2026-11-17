@@ -123,9 +123,30 @@ async function fetchFeeRate(tokenId) {
 
 async function fetchMarket(slug) {
   if (!slug) return null;
-  const payload = await fetchJson(`${GAMMA_API}/markets?slug=${encodeURIComponent(slug)}`);
-  if (Array.isArray(payload)) return payload[0] || null;
-  return payload && typeof payload === 'object' ? payload : null;
+  const payload = await fetchJson(`${GAMMA_API}/events?slug=${encodeURIComponent(slug)}`);
+  return findEventMarket(payload, slug);
+}
+
+function findEventMarket(payload, requestedSlug) {
+  const events = Array.isArray(payload) ? payload : payload ? [payload] : [];
+  for (const event of events) {
+    const markets = parseApiArray(event?.markets);
+    const match = markets.find(market => market?.slug === requestedSlug);
+    if (match) return match;
+    if (event?.slug === requestedSlug && markets.length === 1) return markets[0];
+  }
+  return null;
+}
+
+function parseApiArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 module.exports = {
@@ -134,6 +155,7 @@ module.exports = {
   fetchBook,
   fetchFeeRate,
   fetchMarket,
+  findEventMarket,
   normalizeTrade,
   tradeId,
 };
